@@ -1,3 +1,8 @@
+# Notes
+The following files have not been modified and are kept in case they are useful later:
+- generate_rounds_with_policies.py
+- preset.py
+
 # Coinche R.O.
 
 Coinche is a game card.
