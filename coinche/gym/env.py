@@ -1,5 +1,6 @@
 import numpy as np
 import random
+import gymnasium as gym
 
 from coinche.player import RandomPlayer, AIPlayer
 from coinche.gym.player import GymPlayer
@@ -9,8 +10,18 @@ from coinche.card import Suit
 from coinche.utils import convert_cards_to_vector
 from coinche.reward_prediction import decision_process
 
-from gym import Env, spaces
-from tensorflow.keras import models
+from gymnasium import Env, spaces
+# from tensorflow.keras import models
+
+
+def make_env(env_id="coinche-v3", seed=None):
+    def _init():
+        env =  gym.make(env_id)
+        if seed is not None:
+            env.reset(seed=seed)
+        return env
+    return _init
+# to be used like envs = AsyncVectorEnv([make_env(seed=i) for i in range(8)])
 
 
 class GymCoinche(Env):
@@ -38,12 +49,13 @@ class GymCoinche(Env):
         self.atout_suit = None
         self.value = None
         self.suits_order = None
-        self.contrat_model = models.load_model(contrat_model_path) if contrat_model_path is not None else None
+        self.contrat_model = None # models.load_model(contrat_model_path) if contrat_model_path is not None else None
         print("Contrat model passed: ", contrat_model_path)
         self.attacker_team = 0
         self.original_hands = {}
 
-    def reset(self):
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)        
         """
         reset is mandatory to use gym framework. Reset is called at the end of each round (8 tricks)
         :return: observation
@@ -83,7 +95,7 @@ class GymCoinche(Env):
         # Play until AI
         self._play_until_end_of_rotation_or_ai_play()
         observation = self._get_trick_observation()
-        return observation
+        return observation, {}
 
     def step(self, action):
         """
@@ -122,12 +134,14 @@ class GymCoinche(Env):
             winning_team = 0 if winner.index % 2 == 0 else 1
             info = {'winner': winner.index,
                     'winning_team': winning_team}
-            return observation, reward, False, info
+            terminated = False
+            return observation, reward, terminated, False, info
         else:
             observation = self._get_round_observation()
             info = self.original_hands
             info["total_reward"] = self.total_score
-            return observation, reward, True, info
+            terminated = True
+            return observation, reward, terminated, False, info
 
     def _set_contrat(self, contrat_model):
         default_suit_order = list(Suit)
@@ -200,7 +214,7 @@ class GymCoinche(Env):
                                       player_cards_observation,
                                       trick_cards_observation,
                                       [self.value, current_player.attacker]))
-        return observation
+        return observation.astype(np.float32)
 
     def _get_round_observation(self):
         # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
@@ -211,7 +225,7 @@ class GymCoinche(Env):
                                       player_cards_observation,
                                       trick_cards_observation,
                                       [self.value, 1]))
-        return observation
+        return observation.astype(np.float32)
 
     def _create_trick_rotation(self, starting_player_index):
         rotation = np.array(self.players)
