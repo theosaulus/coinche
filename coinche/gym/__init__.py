@@ -2,7 +2,7 @@ from gymnasium.envs.registration import register
 from coinche.player import RandomPlayer, AIPlayer
 from coinche.gym.player import GymPlayer
 import os
-print(os.listdir())
+# print(os.listdir())
 
 #
 # register(
