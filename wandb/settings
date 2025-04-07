@@ -1,0 +1,5 @@
+[default]
+entity = dhanya-shridar
+project = coincheadversarial
+base_url = https://api.wandb.ai
+

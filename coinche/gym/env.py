@@ -33,7 +33,7 @@ class GymCoinche(Env):
         self.observation_space = spaces.Box(low=0, high=1, shape=(98,))
         # 32 cards
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
-        self.action_space = spaces.Box(low=0, high=1, shape=(32,))
+        self.action_space = spaces.Discrete(32)
 
         self.players = players if players is not None else [
             RandomPlayer(0, "N"),
@@ -106,7 +106,11 @@ class GymCoinche(Env):
         """
         # Play for gym player
         ai_player = self.current_trick_rotation[0]
-        ai_player.set_next_action(action)
+
+        action_vector = np.zeros(32)
+        action_vector[action] = 1
+        ai_player.set_next_action(action_vector)
+
         ai_player.play_turn(self.trick, self.played_tricks, self.suits_order, self.value)
         self.current_trick_rotation.pop(0)
         # Then play until end of trick
