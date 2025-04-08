@@ -3,13 +3,11 @@ import yaml
 import wandb
 import argparse
 
-from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
-from sb3_contrib.ppo_mask import MaskablePPO
-from sb3_contrib.common.maskable.utils import get_action_masks
 
 from train.callbacks import build_callbacks
 from train.utils import make_env_with_masking
+from train.algorithm_choice import get_algorithm
 
 
 def load_config(config_path):
@@ -30,18 +28,8 @@ def main(config_path):
     env = DummyVecEnv([env_fn])
 
     algo = config["algorithm"].upper()
-    if algo == "PPO":
-        model = MaskablePPO(
-            "MlpPolicy",
-            env,
-            verbose=1,
-            tensorboard_log="logs/ppo/",
-        )
-    else:
-        raise NotImplementedError(f"Algorithm '{algo}' is not supported yet.")
-
+    model = get_algorithm(config, env)
     callbacks = build_callbacks(config)
-
     model.learn(
         total_timesteps=config["total_timesteps"],
         callback=callbacks

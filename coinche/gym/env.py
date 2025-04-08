@@ -11,7 +11,6 @@ from coinche.utils import convert_cards_to_vector
 from coinche.reward_prediction import decision_process
 
 from gymnasium import Env, spaces
-# from tensorflow.keras import models
 
 
 def make_env(env_id="coinche-v3", seed=None):
