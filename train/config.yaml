@@ -4,8 +4,8 @@ env_id: coinche-v3
 total_timesteps: 10000
 
 log_every: 1                 # Log every episode
-checkpoint_every: 1000       # Save model every N steps
-eval_every: 1000             # (Optional) evaluate agent every N steps
+checkpoint_every: 10000       # Save model every N steps
+eval_every: 10000             # (Optional) evaluate agent every N steps
 
 log_game_metrics: true       # Log contract, suit, etc.
 save_game_replays: true      # Save replays for analysis

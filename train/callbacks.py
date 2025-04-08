@@ -32,7 +32,7 @@ def build_callbacks(config):
 
     callbacks.append(WandbCallback(
         gradient_save_freq=100,
-        model_save_path="models/",
+        # model_save_path="models/", #This caused an error with wandb...
         verbose=1,
     ))
 
