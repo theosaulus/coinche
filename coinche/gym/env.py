@@ -28,11 +28,13 @@ class GymCoinche(Env):
     def __init__(self, players=None, contrat_model_path=None):
         # observation_space
         # 32 played cards + 32 player cards + 32 cards of current trick + contract_value + attacker
+        # Theo: contract should contain more than contract_value...
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
-        # RL Coach observation_space has to be a Box
+        # RL Coach observation_space has to be a Box - we will not use RL Coach anymore
         self.observation_space = spaces.Box(low=0, high=1, shape=(98,))
         # 32 cards
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
+        # Theo: we will have to add the contract action space somehow
         self.action_space = spaces.Discrete(32)
 
         self.players = players if players is not None else [

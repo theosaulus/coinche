@@ -18,8 +18,6 @@ def load_config(config_path):
 
 def main(config_path):
     config = load_config(config_path)
-    
-    os.environ["WANDB_SYMLINK"] = "false"
     wandb.init(
         project=config["project_name"],
         config=config,

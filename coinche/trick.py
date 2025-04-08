@@ -86,7 +86,7 @@ class Trick:
                 trick_value += _ATOUT_VALUES[card.rank]
             else:
                 trick_value += _GENERIC_VALUES[card.rank]
-        # 10 de der
+        # 10 de der: if the last trick is won, add 10 points
         if self.trick_number == 8:
             trick_value += 10
         return trick_value
@@ -107,7 +107,7 @@ class Trick:
 
 _GENERIC_VALUES = dict(
     [(Rank.SEVEN, 0),
-     (Rank.HEIGHT, 0),
+     (Rank.EIGHT, 0),
      (Rank.NINE, 0),
      (Rank.TEN, 10),
      (Rank.JACK, 2),
@@ -118,9 +118,9 @@ _GENERIC_VALUES = dict(
 
 _GENERIC_RANK = dict(
     [(Rank.SEVEN, 1),
-     (Rank.HEIGHT, 2),
+     (Rank.EIGHT, 2),
      (Rank.NINE, 3),
-     (Rank.TEN, 7),
+     (Rank.TEN, 7), # 10 is indeed the second best rank
      (Rank.JACK, 4),
      (Rank.QUEEN, 5),
      (Rank.KING, 6),
@@ -129,10 +129,10 @@ _GENERIC_RANK = dict(
 
 _ATOUT_VALUES = dict(
     [(Rank.SEVEN, 0),
-     (Rank.HEIGHT, 0),
-     (Rank.NINE, 14),
+     (Rank.EIGHT, 0),
+     (Rank.NINE, 14), # 9 of atout
      (Rank.TEN, 10),
-     (Rank.JACK, 20),
+     (Rank.JACK, 20), # Jack of atout
      (Rank.QUEEN, 3),
      (Rank.KING, 4),
      (Rank.ACE, 11)]
@@ -140,10 +140,10 @@ _ATOUT_VALUES = dict(
 
 _ATOUT_RANK = dict(
     [(Rank.SEVEN, 1),
-     (Rank.HEIGHT, 2),
-     (Rank.NINE, 7),
+     (Rank.EIGHT, 2),
+     (Rank.NINE, 7), # 9 is the second best atout
      (Rank.TEN, 5),
-     (Rank.JACK, 8),
+     (Rank.JACK, 8), # Jack is the best atout
      (Rank.QUEEN, 3),
      (Rank.KING, 4),
      (Rank.ACE, 6)]
