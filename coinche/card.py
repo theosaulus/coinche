@@ -53,6 +53,7 @@ class Suit(Enum):
 
     @staticmethod
     def create_order(atout_suit):
+        # Reorder the enum into a list with the first element being the atout_suit
         suits_order = np.array(list(Suit))
         while True:
             if suits_order[0] == atout_suit:
@@ -65,7 +66,7 @@ class Rank(Enum):
     # Ranks indicated
     # Where ace is high and two is low
     SEVEN = 0
-    HEIGHT = 1
+    EIGHT = 1
     NINE = 2
     TEN = 3
     JACK = 4

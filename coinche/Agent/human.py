@@ -11,7 +11,7 @@ class Human:
             print(observation)
             former_value = observation["data"]["contrat"]
             contrat_dict = {"suit": int(observation["data"]["suit"]),
-                            "value":  int(observation["data"]["contrat"]),
+                            "contract_value":  int(observation["data"]["contrat"]),
                             "newContrat": False}
             print('current contrat: ', contrat_dict)
             print("To pass, just press twice 'enter'")
@@ -21,7 +21,7 @@ class Human:
                 
                 contrat_dict["newContrat"]=True
                 contrat_dict["suit"] = int(suit)
-                contrat_dict["value"] = int(contrat)
+                contrat_dict["contract_value"] = int(contrat)
             print(contrat_dict)
             return {
                     "event_name" : "ChooseContratAction",

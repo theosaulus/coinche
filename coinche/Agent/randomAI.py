@@ -25,7 +25,7 @@ class RandomAI:
             print(observation)
             former_value = observation["data"]["contrat"]
             contrat_dict = {"suit": int(observation["data"]["suit"]),
-                            "value":  int(observation["data"]["contrat"]),
+                            "contract_value":  int(observation["data"]["contrat"]),
                             "newContrat": False}
             print('current contrat: ', contrat_dict)
 #           Choose if RandomAI makes a call:
@@ -41,7 +41,7 @@ class RandomAI:
                 # you must return "newContrat=True" if you change the value of the contrat
                 contrat_dict["newContrat"] = True
                 contrat_dict["suit"] = int(suit)
-                contrat_dict["value"] = int(contrat)
+                contrat_dict["contract_value"] = int(contrat)
 
                 print('New contrat: ', contrat_dict)
             return {
@@ -55,7 +55,7 @@ class RandomAI:
         elif observation['event_name'] == 'ChooseContrat':
             print(observation)
             contrat_dict = {"suit": None,
-                            "value": None}
+                            "contract_value": None}
             for i, key in enumerate(contrat_dict):
                 contrat_dict[key] = input('{0}: '.format(key))
 
