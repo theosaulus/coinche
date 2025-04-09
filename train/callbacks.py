@@ -30,10 +30,11 @@ def build_callbacks(config):
             )
         )
 
-    callbacks.append(WandbCallback(
-        gradient_save_freq=100,
-        # model_save_path="models/", #This caused an error with wandb...
-        verbose=1,
-    ))
+    if config.get("gradient_save_freq", 0) > 0:
+        callbacks.append(WandbCallback(
+            gradient_save_freq=config["gradient_save_freq"],
+            # model_save_path="models/", #This caused an error with wandb...
+            verbose=1,
+        ))
 
     return callbacks
