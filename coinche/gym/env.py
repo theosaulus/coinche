@@ -48,7 +48,7 @@ class GymCoinche(Env):
         self.played_tricks = []
         self.trick = None
         self.atout_suit = None
-        self.value = None
+        self.contract_value = None
         self.suits_order = None
         self.contrat_model = None # models.load_model(contrat_model_path) if contrat_model_path is not None else None
         print("Contrat model passed: ", contrat_model_path)
@@ -72,7 +72,7 @@ class GymCoinche(Env):
         # Get value of the contract and attacker team and updates suits order
         if self.contrat_model is None:
             self.atout_suit = random.choice(list(Suit))  # select randomly the suit
-            self.value = random.randint(0, 1)  # Can only announce 80 or 90 to begin with
+            self.contract_value = random.randint(0, 1)  # Can only announce 80 or 90 to begin with
             self.attacker_team = random.randint(0, 1)  # 0 if it is team 0 (player 0 and player 2) else 1 for team 1
             self.suits_order = Suit.create_order(self.atout_suit)
         else:
@@ -112,7 +112,7 @@ class GymCoinche(Env):
         action_vector[action] = 1
         ai_player.set_next_action(action_vector)
 
-        ai_player.play_turn(self.trick, self.played_tricks, self.suits_order, self.value)
+        ai_player.play_turn(self.trick, self.played_tricks, self.suits_order, self.contract_value)
         self.current_trick_rotation.pop(0)
         # Then play until end of trick
         self._play_until_end_of_rotation_or_ai_play()
@@ -122,7 +122,7 @@ class GymCoinche(Env):
         reward = self._get_reward(self.trick,
                                   self.total_score,
                                   trick_score_factor,
-                                  self.value)
+                                  self.contract_value)
         # add score to teams
         self.played_tricks.append(self.trick)
 
@@ -172,7 +172,7 @@ class GymCoinche(Env):
         self.atout_suit = default_suit_order[-shift]
         self.suits_order = Suit.create_order(self.atout_suit)
 
-        self.value = np.max([0, (expected_reward_team//10) - 8])/9
+        self.contract_value = np.max([0, (expected_reward_team//10) - 8])/9
         self.attacker_team = attacker_team
 
     def _rebuild_deck(self, played_tricks):
@@ -205,7 +205,7 @@ class GymCoinche(Env):
             current_player = self.current_trick_rotation[0]
             if isinstance(current_player, GymPlayer):
                 break
-            current_player.play_turn(self.trick, self.played_tricks, self.suits_order, self.value)
+            current_player.play_turn(self.trick, self.played_tricks, self.suits_order, self.contract_value)
             self.current_trick_rotation.pop(0)
 
     def _get_trick_observation(self):
@@ -218,7 +218,7 @@ class GymCoinche(Env):
         observation = np.concatenate((played_cards_observation,
                                       player_cards_observation,
                                       trick_cards_observation,
-                                      [self.value, current_player.attacker]))
+                                      [self.contract_value, current_player.attacker]))
         return observation.astype(np.float32)
 
     def _get_round_observation(self):
@@ -229,7 +229,7 @@ class GymCoinche(Env):
         observation = np.concatenate((played_cards_observation,
                                       player_cards_observation,
                                       trick_cards_observation,
-                                      [self.value, 1]))
+                                      [self.contract_value, 1]))
         return observation.astype(np.float32)
 
     def _create_trick_rotation(self, starting_player_index):
