@@ -26,3 +26,11 @@ class GymPlayer(Player):
         cards_play_order = convert_index_to_cards(cards_index, suits_order)
         self.next_action = None
         return cards_play_order
+
+    def bid(self, hand, bidding_history, valid_bids, suits_order):
+        # Theo: NOT SURE ABOUT THIS ONE
+        if self.next_action is None:
+            raise RuntimeError("GymPlayer bidding: no action set.")
+        action = self.next_action
+        self.next_action = None
+        return action if action in valid_bids else 0

@@ -1,10 +1,12 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import random
 
 from random import choice, sample
 from coinche.utils import convert_cards_to_vector, convert_index_to_cards
 from coinche.exceptions import PlayException
+from coinche.card import Suit
 
 class Player:
     def __init__(self, index, name):
@@ -12,6 +14,9 @@ class Player:
         self.name = name
         self.cards = []
         self.attacker = None
+
+    def bid(self, hand, bidding_history, valid_bids, suits_order):
+        raise NotImplementedError()
 
     def add_cards(self, cards):
         self.cards += cards
@@ -54,11 +59,16 @@ class RandomPlayer(Player):
     def get_cards_order(self, _trick, _played_tricks, _suits_order, _contract_value):
         return sample(self.cards, len(self.cards))
 
+    def bid(self, hand, bidding_history, valid_bids, suits_order):
+        return random.choice(valid_bids)
 
 class DeterministicPlayer(RandomPlayer):
     def get_cards_order(self, trick, _played_tricks, _suits_order, _contract_value):
         return self.cards
 
+    def bid(self, hand, bidding_history, valid_bids, suits_order):
+        # return 80 of the first atout, or nothing
+        return NotImplementedError()
 
 class TorchPolicy(nn.Module):
     def __init__(self, input_dim=98, hidden_dim=128):
@@ -101,3 +111,8 @@ class AIPlayer(Player):
         else:
             card_indices = np.argsort(-player_cards_obs)
         return convert_index_to_cards(card_indices, suits_order)
+    
+    def bid(self, hand, bidding_history, valid_bids, suits_order):
+        # Have part of the NN to predict the bid
+        # Have some shared weights with the tricks, potentially
+        return NotImplementedError()

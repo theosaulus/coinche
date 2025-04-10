@@ -20,3 +20,7 @@ class MustPlayACard(PlayException):
 
 class MustPlayHisCards(PlayException):
     pass
+
+
+class MustBidHigher(PlayException):
+    pass

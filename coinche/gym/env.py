@@ -22,18 +22,31 @@ def make_env(env_id="coinche-v3", seed=None):
     return _init
 # to be used like envs = AsyncVectorEnv([make_env(seed=i) for i in range(8)])
 
+def decode_bid_action(action):
+    """
+    Decode the action number into a bid value and trump suit.
+    There are 37 actions: 0 is "pass", 1-36 map to bids.
+    Action numbers 1...36: bid_value increases in increments of 10 starting at 80.
+    E.g., 1 = 80 heart, 2 = 80 spades, etc.
+
+    :param action: action number
+    :return: (bid_value, atout_suit) or "pass"
+    """
+    if action == 0:
+        return "pass"
+    bid_value = 80 + ((action - 1) // 4) * 10
+    trump_index = (action - 1) % 4
+    atout_suit = list(Suit)[trump_index]
+    return (bid_value, atout_suit)
 
 class GymCoinche(Env):
     def __init__(self, players=None, contrat_model_path=None):
         # observation_space
         # 32 played cards + 32 player cards + 32 cards of current trick + contract_value + attacker
-        # Theo: contract should contain more than contract_value...
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
-        # RL Coach observation_space has to be a Box - we will not use RL Coach anymore
         self.observation_space = spaces.Box(low=0, high=1, shape=(98,))
         # 32 cards
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
-        # Theo: we will have to add the contract action space somehow
         self.action_space = spaces.Discrete(32)
 
         self.players = players if players is not None else [
@@ -42,6 +55,8 @@ class GymCoinche(Env):
             GymPlayer(2, "S"),
             RandomPlayer(3, "W")
         ]
+
+        # Theo: Reorganization of the init would be nice to better separate phases
         self.current_trick_rotation = []
         self.deck = Deck()
         self.round_number = 0
@@ -55,6 +70,10 @@ class GymCoinche(Env):
         self.attacker_team = 0
         self.original_hands = {}
 
+        self.dealer_index = 0
+        self.bidding_history = []
+        self.bidding_history_length = 30 # max number of bids possible: 4 + 3*8 + 2
+
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)        
         """
@@ -67,20 +86,8 @@ class GymCoinche(Env):
         # We rebuild the deck based on previous trick won by each players
         self._rebuild_deck(self.played_tricks)
         self._deal_cards()
+        self._bidding_phase()
         self.played_tricks = []
-
-        # Get value of the contract and attacker team and updates suits order
-        if self.contrat_model is None:
-            self.atout_suit = random.choice(list(Suit))  # select randomly the suit
-            self.contract_value = random.randint(0, 1)  # Can only announce 80 or 90 to begin with
-            self.attacker_team = random.randint(0, 1)  # 0 if it is team 0 (player 0 and player 2) else 1 for team 1
-            self.suits_order = Suit.create_order(self.atout_suit)
-        else:
-            self._set_contrat(self.contrat_model)
-
-        # Set players attacker
-        for p in self.players:
-            p.attacker = int(self.attacker_team == p.index % 2)
 
         self.original_hands = {
             "player0-hand": convert_cards_to_vector(self.players[0].cards, self.suits_order),
@@ -148,6 +155,64 @@ class GymCoinche(Env):
             terminated = True
             return observation, reward, terminated, False, info
 
+    def _bidding_phase(self):
+        """
+        Implements the bidding phase using 37 possible actions:
+        - 0: pass
+        - 1..36: bid (80-160) with suit
+        """
+        self.bidding_history = []
+        current_bid = None
+        winning_player = None
+
+        # 1st player is the one on the left of the dealer
+        player_index = (self.dealer_index + 1) % 4 
+        passes_in_row = 0
+
+        while True:
+            player = self.players[player_index]
+            valid_bids = self._get_valid_bid_actions(current_bid)
+            suits_order = list(Suit)
+            hand = convert_cards_to_vector(player.cards, suits_order)
+
+            action = player.bid(hand, self.bidding_history, valid_bids, suits_order)
+            if action not in valid_bids:
+                raise RuntimeError(f"Invalid action {action} for player {player.index} with hand {hand}")
+
+            self.bidding_history.append((player.index, action))
+            bid = decode_bid_action(action)
+
+            if bid == "pass":
+                passes_in_row += 1
+            else:
+                bid_value, bid_suit = bid
+                if current_bid is None or bid_value > current_bid[0]:
+                    current_bid = (bid_value, bid_suit)
+                    winning_player = player
+                    passes_in_row = 0
+                else:
+                    raise RuntimeError(f"Invalid bid {action} for player {player.index} with hand {hand}")
+
+            if current_bid is None and len(self.bidding_history) >= 4:
+                # everyone passed
+                # Theo: we should allow everyone to pass, but give bad reward to everyone
+                current_bid = (80, random.choice(list(Suit)))
+                winning_player = self.players[(self.round_number + 1) % 4]
+                break
+
+            if current_bid is not None and passes_in_row >= 3:
+                # everyone passed after a bid: end of bidding phase
+                break
+
+            player_index = (player_index + 1) % 4
+
+        self.contract_value, self.atout_suit = current_bid
+        self.attacker_team = winning_player.index % 2
+        self.suits_order = Suit.create_order(self.atout_suit)
+
+        for p in self.players:
+            p.attacker = int(p.index % 2 == self.attacker_team)
+    
     def _set_contrat(self, contrat_model):
         default_suit_order = list(Suit)
 
@@ -231,6 +296,19 @@ class GymCoinche(Env):
                                       trick_cards_observation,
                                       [self.contract_value, 1]))
         return observation.astype(np.float32)
+
+    def _get_valid_bid_actions(self, current_bid):
+        if current_bid is None:
+            return list(range(1, 37)) + [0]  # all possible bids + pass
+        else:
+            min_bid_value = current_bid[0] + 10
+            valid = []
+            for i in range(1, 37):
+                val, suit = decode_bid_action(i)
+                if val >= min_bid_value:
+                    valid.append(i)
+            valid.append(0)  # pass always allowed
+            return valid
 
     def _create_trick_rotation(self, starting_player_index):
         rotation = np.array(self.players)
