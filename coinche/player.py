@@ -15,7 +15,7 @@ class Player:
         self.cards = []
         self.attacker = None
 
-    def bid(self, hand, bidding_history, valid_bids, suits_order):
+    def bid(self, observation, valid_bids, suits_order):
         raise NotImplementedError()
 
     def add_cards(self, cards):
@@ -59,17 +59,21 @@ class RandomPlayer(Player):
     def get_cards_order(self, _trick, _played_tricks, _suits_order, _contract_value):
         return sample(self.cards, len(self.cards))
 
-    def bid(self, hand, bidding_history, valid_bids, suits_order):
+    def bid(self, observation, valid_bids, suits_order):
         return random.choice(valid_bids)
 
 class DeterministicPlayer(RandomPlayer):
     def get_cards_order(self, trick, _played_tricks, _suits_order, _contract_value):
         return self.cards
 
-    def bid(self, hand, bidding_history, valid_bids, suits_order):
-        # return 80 of the first atout, or nothing
-        return NotImplementedError()
-
+    def bid(self, observation, valid_bids, suits_order):
+        for suit_index, suit in enumerate(suits_order):
+            for bid_value in [80, 90]:
+                action = 1 + 4 * ((bid_value - 80) // 10) + suit_index
+                if action in valid_bids:
+                    return action
+        return 0
+    
 class TorchPolicy(nn.Module):
     def __init__(self, input_dim=98, hidden_dim=128):
         super().__init__()
@@ -112,7 +116,7 @@ class AIPlayer(Player):
             card_indices = np.argsort(-player_cards_obs)
         return convert_index_to_cards(card_indices, suits_order)
     
-    def bid(self, hand, bidding_history, valid_bids, suits_order):
+    def bid(self, observation, valid_bids, suits_order):
         # Have part of the NN to predict the bid
         # Have some shared weights with the tricks, potentially
         return NotImplementedError()

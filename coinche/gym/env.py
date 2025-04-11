@@ -3,7 +3,7 @@ import random
 import gymnasium as gym
 
 from coinche.player import RandomPlayer, AIPlayer
-from coinche.gym.player import GymPlayer
+from coinche.gym.gymplayer import GymPlayer
 from coinche.trick import Trick
 from coinche.deck import Deck
 from coinche.card import Suit
@@ -12,6 +12,7 @@ from coinche.reward_prediction import decision_process
 
 from gymnasium import Env, spaces
 
+PAD_ACTION = 39
 
 def make_env(env_id="coinche-v3", seed=None):
     def _init():
@@ -25,26 +26,37 @@ def make_env(env_id="coinche-v3", seed=None):
 def decode_bid_action(action):
     """
     Decode the action number into a bid value and trump suit.
-    There are 37 actions: 0 is "pass", 1-36 map to bids.
-    Action numbers 1...36: bid_value increases in increments of 10 starting at 80.
-    E.g., 1 = 80 heart, 2 = 80 spades, etc.
+    There are 40 actions: 
+    - 0 is "pass", 1-36 map to bids.
+    - Action numbers 1...36: bid_value increases in increments of 10 starting at 80.
+        E.g., 1 = 80 heart, 2 = 80 spades, etc.
+    - 37 is coinche (ie. double the bet, but not the bet value)
+    - 38 is surcoinche (ie. double the bet again, but not the bet value)
+    - 39 is used for padding, and should not be sampled as an action.
 
     :param action: action number
     :return: (bid_value, atout_suit) or "pass"
     """
     if action == 0:
         return "pass"
-    bid_value = 80 + ((action - 1) // 4) * 10
-    trump_index = (action - 1) % 4
-    atout_suit = list(Suit)[trump_index]
-    return (bid_value, atout_suit)
+    elif action == 37:
+        return "coinche"
+    elif action == 38:
+        return "surcoinche"
+    elif action == 39:
+        raise ValueError("Invalid action: 39 is used for padding and should not be sampled as an action.")
+    else:
+        bid_value = 80 + ((action - 1) // 4) * 10
+        trump_index = (action - 1) % 4
+        atout_suit = list(Suit)[trump_index]
+        return (bid_value, atout_suit)
 
 class GymCoinche(Env):
     def __init__(self, players=None, contrat_model_path=None):
         # observation_space
-        # 32 played cards + 32 player cards + 32 cards of current trick + contract_value + attacker
+        # 34 bids + 32 played cards + 32 player cards + 32 cards of current trick + attacker + bidding/trick phase
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
-        self.observation_space = spaces.Box(low=0, high=1, shape=(98,))
+        self.observation_space = spaces.Box(low=0, high=1, shape=(132,))
         # 32 cards
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
         self.action_space = spaces.Discrete(32)
@@ -65,55 +77,108 @@ class GymCoinche(Env):
         self.atout_suit = None
         self.contract_value = None
         self.suits_order = None
-        self.contrat_model = None # models.load_model(contrat_model_path) if contrat_model_path is not None else None
-        print("Contrat model passed: ", contrat_model_path)
+        # self.contrat_model = None # models.load_model(contrat_model_path) if contrat_model_path is not None else None
+        # print("Contrat model passed: ", contrat_model_path)
         self.attacker_team = 0
         self.original_hands = {}
 
         self.dealer_index = 0
         self.bidding_history = []
-        self.bidding_history_length = 30 # max number of bids possible: 4 + 3*8 + 2
+        self.current_bid = None
+        self.bid_winning_player = None
+        self.passes_in_row = 0
+        self.current_bidding_player_index = (self.dealer_index + 1) % 4
+        self.bidding_done = False
+        self.total_score = 0
+        self.bidding_history_length = 34 # 4 + 3 * 10, because card(90 to 160 + coinche + surcoinche)=10
+        self.coinche_surcoinche = 0
+
 
     def reset(self, *, seed=None, options=None):
-        super().reset(seed=seed)        
-        """
-        reset is mandatory to use gym framework. Reset is called at the end of each round (8 tricks)
-        :return: observation
-        """
-        # New round
         self.round_number += 1
-
-        # We rebuild the deck based on previous trick won by each players
         self._rebuild_deck(self.played_tricks)
         self._deal_cards()
-        self._bidding_phase()
+        self._init_bidding_phase()
         self.played_tricks = []
+        return self._get_current_observation(), {}
 
-        self.original_hands = {
-            "player0-hand": convert_cards_to_vector(self.players[0].cards, self.suits_order),
-            "player1-hand": convert_cards_to_vector(self.players[1].cards, self.suits_order),
-            "player2-hand": convert_cards_to_vector(self.players[2].cards, self.suits_order),
-            "player3-hand": convert_cards_to_vector(self.players[3].cards, self.suits_order),
-            "attacker_team": [p.attacker for p in self.players]
-        }
-        self.total_score = 0
-        self.trick = Trick(self.atout_suit, trick_number=1)
-        self.current_trick_rotation = self._create_trick_rotation(self.round_number % 4)
-
-        # Play until AI
-        self._play_until_end_of_rotation_or_ai_play()
-        observation = self._get_trick_observation()
-        return observation, {}
 
     def step(self, action):
         """
         step is mandatory to use gym framework
         In each step, every player play exactly one, especially the AIPlayers.
-        :param action:
+        :param action: action to play (either bid or trick)
         :return: observation, reward, done, info
         """
-        # Play for gym player
+        if not self.bidding_done:
+            self.bidding_step(action)
+        else:
+            self.trick_step(action)
+
+    def bidding_step(self, action):
+        player = self.players[self.current_bidding_player_index]
+        if not isinstance(player, GymPlayer):
+            raise RuntimeError("Not GymPlayer's turn to bid")
+
+        valid_bids = self._get_valid_bid_actions(self.current_bid)
+        if action not in valid_bids:
+            raise RuntimeError(f"Invalid bid {action} for player {player.index}")
+
+        self._process_bidding(action, player)
+        self.current_bidding_player_index = (self.current_bidding_player_index + 1) % 4
+
+        # Play automatically for other players until GymPlayer or end
+        while not isinstance(self.players[self.current_bidding_player_index], GymPlayer) and not self.bidding_done:
+            player = self.players[self.current_bidding_player_index]
+            observation = self._get_current_observation()
+            action = player.bid(observation, valid_bids, list(Suit))
+            
+            self._process_bidding(action, player)
+            self.current_bidding_player_index = (self.current_bidding_player_index + 1) % 4
+
+        if self.current_bid is None and len(self.bidding_history) >= 4:
+            # Everyone passed without bid: end of the round, bad reward to everyone
+            observation = self._get_current_observation()
+            reward = -10
+            info = self.original_hands
+            info["total_reward"] = -10
+            terminated = True
+            return observation, reward, terminated, False, info
+
+        elif self.current_bid is not None and self.passes_in_row >= 3:
+            self.bidding_done = True
+            self.contract_value, self.atout_suit = self.current_bid[0], self.current_bid[1]
+
+            if len(self.current_bid) == 3:
+                self.coinche_surcoinche = 1 if self.current_bid[2] == "coinche" else 2
+            self.attacker_team = self.bid_winning_player.index % 2
+            self.suits_order = Suit.create_order(self.atout_suit)
+            self.start_trick_phase()
+
+        observation = self._get_current_observation()
+        reward = 0
+        terminated = False
+        return observation, reward, terminated, False, info
+
+    def start_trick_phase(self):
+        for p in self.players:
+            p.attacker = int(p.index % 2 == self.attacker_team)
+
+        self.original_hands = {
+            f"player{i}-hand": convert_cards_to_vector(player.cards, self.suits_order)
+            for i, player in enumerate(self.players)
+        }
+
+        self.original_hands["attacker_team"] = [p.attacker for p in self.players]
+        self.total_score = 0
+        self.trick = Trick(self.atout_suit, trick_number=1)
+        self.current_trick_rotation = self._create_trick_rotation(self.round_number % 4)
+        self._play_until_end_of_rotation_or_ai_play() # Play until AI
+
+    def trick_step(self, action):
         ai_player = self.current_trick_rotation[0]
+        if not isinstance(ai_player, GymPlayer):
+            raise RuntimeError("Not GymPlayer's turn to play")
 
         action_vector = np.zeros(32)
         action_vector[action] = 1
@@ -121,17 +186,19 @@ class GymCoinche(Env):
 
         ai_player.play_turn(self.trick, self.played_tricks, self.suits_order, self.contract_value)
         self.current_trick_rotation.pop(0)
+
         # Then play until end of trick
         self._play_until_end_of_rotation_or_ai_play()
+
         # Handle end of trick
         winner = self.trick.winner
         trick_score_factor = ai_player.index % 2 == winner.index % 2
         reward = self._get_reward(self.trick,
-                                  self.total_score,
-                                  trick_score_factor,
-                                  self.contract_value)
-        # add score to teams
-        self.played_tricks.append(self.trick)
+            self.total_score,
+            trick_score_factor,
+            self.contract_value
+        )
+        self.played_tricks.append(self.trick) # add score to teams
 
         # Add trick score to total_score
         self.total_score += self._get_trick_reward(self.trick, trick_score_factor)
@@ -142,7 +209,7 @@ class GymCoinche(Env):
             self.current_trick_rotation = self._create_trick_rotation(winner.index)
             # Play until AI
             self._play_until_end_of_rotation_or_ai_play()
-            observation = self._get_trick_observation()
+            observation = self._get_current_observation()
             winning_team = 0 if winner.index % 2 == 0 else 1
             info = {'winner': winner.index,
                     'winning_team': winning_team}
@@ -155,91 +222,39 @@ class GymCoinche(Env):
             terminated = True
             return observation, reward, terminated, False, info
 
-    def _bidding_phase(self):
-        """
-        Implements the bidding phase using 37 possible actions:
-        - 0: pass
-        - 1..36: bid (80-160) with suit
-        """
+
+    def _init_bidding_phase(self):
         self.bidding_history = []
-        current_bid = None
-        winning_player = None
+        self.current_bid = None
+        self.bid_winning_player = None
+        self.passes_in_row = 0
+        self.current_bidding_player_index = (self.dealer_index + 1) % 4
+        self.bidding_done = False
 
-        # 1st player is the one on the left of the dealer
-        player_index = (self.dealer_index + 1) % 4 
-        passes_in_row = 0
+    def _process_bidding(self, action, player):
+        self.bidding_history.append(action)
+        bid = decode_bid_action(action)
 
-        while True:
-            player = self.players[player_index]
-            valid_bids = self._get_valid_bid_actions(current_bid)
-            suits_order = list(Suit)
-            hand = convert_cards_to_vector(player.cards, suits_order)
-
-            action = player.bid(hand, self.bidding_history, valid_bids, suits_order)
-            if action not in valid_bids:
-                raise RuntimeError(f"Invalid action {action} for player {player.index} with hand {hand}")
-
-            self.bidding_history.append((player.index, action))
-            bid = decode_bid_action(action)
-
-            if bid == "pass":
-                passes_in_row += 1
-            else:
-                bid_value, bid_suit = bid
-                if current_bid is None or bid_value > current_bid[0]:
-                    current_bid = (bid_value, bid_suit)
-                    winning_player = player
-                    passes_in_row = 0
-                else:
-                    raise RuntimeError(f"Invalid bid {action} for player {player.index} with hand {hand}")
-
-            if current_bid is None and len(self.bidding_history) >= 4:
-                # everyone passed
-                # Theo: we should allow everyone to pass, but give bad reward to everyone
-                current_bid = (80, random.choice(list(Suit)))
-                winning_player = self.players[(self.round_number + 1) % 4]
-                break
-
-            if current_bid is not None and passes_in_row >= 3:
-                # everyone passed after a bid: end of bidding phase
-                break
-
-            player_index = (player_index + 1) % 4
-
-        self.contract_value, self.atout_suit = current_bid
-        self.attacker_team = winning_player.index % 2
-        self.suits_order = Suit.create_order(self.atout_suit)
-
-        for p in self.players:
-            p.attacker = int(p.index % 2 == self.attacker_team)
-    
-    def _set_contrat(self, contrat_model):
-        default_suit_order = list(Suit)
-
-        hand0 = convert_cards_to_vector(self.players[0].cards, default_suit_order)
-        hand1 = convert_cards_to_vector(self.players[1].cards, default_suit_order)
-        hand2 = convert_cards_to_vector(self.players[2].cards, default_suit_order)
-        hand3 = convert_cards_to_vector(self.players[3].cards, default_suit_order)
-
-        shift_team1, expected_reward_team1 = decision_process(hand0, hand2, contrat_model)
-        shift_team2, expected_reward_team2 = decision_process(hand1, hand3, contrat_model)
-
-        if expected_reward_team1 > expected_reward_team2:
-            expected_reward_team = expected_reward_team1
-            attacker_team = 0
-            shift = shift_team1
+        if bid == "pass":
+            self.passes_in_row += 1
+        elif bid == "coinche":
+            if self.current_bid is None:
+                raise RuntimeError("Coinche is not allowed before a bid.")
+            self.current_bid = (self.current_bid[0], self.current_bid[1], "coinche")
+            self.bid_winning_player = player
+            self.passes_in_row = 0
+        elif bid == "surcoinche":
+            if self.current_bid is None or self.current_bid[2] != "coinche":
+                raise RuntimeError("Surcoinche is not allowed before a coinche.")
+            self.current_bid = (self.current_bid[0], self.current_bid[1], "surcoinche")
+            self.bid_winning_player = player
+            self.passes_in_row = 0
         else:
-            expected_reward_team = expected_reward_team2
-            attacker_team = 1
-            shift = shift_team2
-
-        # Carefull: shifting is anti-clockwise
-        self.atout_suit = default_suit_order[-shift]
-        self.suits_order = Suit.create_order(self.atout_suit)
-
-        self.contract_value = np.max([0, (expected_reward_team//10) - 8])/9
-        self.attacker_team = attacker_team
-
+            bid_value, bid_suit = bid
+            self.current_bid = (bid_value, bid_suit)
+            self.bid_winning_player = player
+            self.passes_in_row = 0
+    
     def _rebuild_deck(self, played_tricks):
         # Check if duplicated cards
         for p in self.players:
@@ -273,25 +288,45 @@ class GymCoinche(Env):
             current_player.play_turn(self.trick, self.played_tricks, self.suits_order, self.contract_value)
             self.current_trick_rotation.pop(0)
 
-    def _get_trick_observation(self):
+    def _get_current_observation(self):
         # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
-        played_cards = [card for trick in self.played_tricks for card in trick.cards]
-        played_cards_observation = convert_cards_to_vector(played_cards, self.suits_order)
-        current_player = self.current_trick_rotation[0]
-        player_cards_observation = convert_cards_to_vector(current_player.cards, self.suits_order)
-        trick_cards_observation = convert_cards_to_vector(self.trick.cards, self.suits_order)
-        observation = np.concatenate((played_cards_observation,
+        if not self.bidding_done:
+            played_cards = []
+            current_player = self.players[self.current_bidding_player_index]
+            suits_order = list(Suit)
+            current_player_attacker = 2 # 2 = bidding phase
+        
+        else:
+            played_cards = [card for trick in self.played_tricks for card in trick.cards]
+            current_player = self.current_trick_rotation[0]
+            suits_order = self.suits_order
+            current_player_attacker = current_player.attacker
+
+        bidding_history = [PAD_ACTION] * (self.bidding_history_length - len(self.bidding_history)) + self.bidding_history
+        bidding_history_observation = np.array(bidding_history)
+
+        played_cards_observation = convert_cards_to_vector(played_cards, suits_order)
+        player_cards_observation = convert_cards_to_vector(current_player.cards, suits_order)
+        trick_cards_observation = convert_cards_to_vector(self.trick.cards, suits_order)
+
+        observation = np.concatenate((bidding_history_observation,
+                                      played_cards_observation,
                                       player_cards_observation,
                                       trick_cards_observation,
-                                      [self.contract_value, current_player.attacker]))
+                                      [self.contract_value, current_player_attacker]))
         return observation.astype(np.float32)
 
     def _get_round_observation(self):
         # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
+        bidding_history = [PAD_ACTION] * (self.bidding_history_length - len(self.bidding_history)) + self.bidding_history
+        bidding_history_observation = np.array(bidding_history)
+
         played_cards_observation = np.ones(32)
         player_cards_observation = np.zeros(32)
         trick_cards_observation = convert_cards_to_vector(self.trick.cards, self.suits_order)
-        observation = np.concatenate((played_cards_observation,
+        
+        observation = np.concatenate((bidding_history_observation,
+                                      played_cards_observation,
                                       player_cards_observation,
                                       trick_cards_observation,
                                       [self.contract_value, 1]))
@@ -299,15 +334,13 @@ class GymCoinche(Env):
 
     def _get_valid_bid_actions(self, current_bid):
         if current_bid is None:
-            return list(range(1, 37)) + [0]  # all possible bids + pass
+            return list(range(1, 36)) + [0]  # all bids except coinche/surcoinche + pass
+        elif current_bid[0] == "coinche":
+            return [38, 0] # surcoinche + pass
         else:
             min_bid_value = current_bid[0] + 10
-            valid = []
-            for i in range(1, 37):
-                val, suit = decode_bid_action(i)
-                if val >= min_bid_value:
-                    valid.append(i)
-            valid.append(0)  # pass always allowed
+            min_action_index = 1 + 4 * ((min_bid_value - 80) // 10)
+            valid = list(range(min_action_index, 37)) + [0]  # all possible bids except surcoinche + pass
             return valid
 
     def _create_trick_rotation(self, starting_player_index):
@@ -323,7 +356,8 @@ class GymCoinche(Env):
     def _get_reward(self, trick, total_score, trick_score_factor, value, normalisation_trick=10):
         # trick reward: if not last trick
         if True:
-            score = trick.score()
+            score = trick.score() + 10 * (len(self.played_tricks) == 7) # add 10 to last trick
+            # score = trick.score()
             if trick_score_factor:
                 return score  / normalisation_trick
             else:
@@ -336,10 +370,10 @@ class GymCoinche(Env):
         #         return - np.exp(score / normalisation_trick)
 
         # if this is last trick of round
-#         else:
-# #          Let's check if contract is done
-#             if ((total_score/10) - 8)/9 >= value:
-#                 return 9
-#             else:
-#                 return -9
+        # else:
+        # # Let's check if contract is done
+        #     if ((total_score/10) - 8)/9 >= value:
+        #         return 9
+        #     else:
+        #         return -9
 
