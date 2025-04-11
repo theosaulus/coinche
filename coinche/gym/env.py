@@ -7,7 +7,7 @@ from coinche.gym.gymplayer import GymPlayer
 from coinche.trick import Trick
 from coinche.deck import Deck
 from coinche.card import Suit
-from coinche.utils import convert_cards_to_vector
+from coinche.utils import convert_cards_to_vector, decode_bid_action
 from coinche.reward_prediction import decision_process
 
 from gymnasium import Env, spaces
@@ -23,43 +23,16 @@ def make_env(env_id="coinche-v3", seed=None):
     return _init
 # to be used like envs = AsyncVectorEnv([make_env(seed=i) for i in range(8)])
 
-def decode_bid_action(action):
-    """
-    Decode the action number into a bid value and trump suit.
-    There are 40 actions: 
-    - 0 is "pass", 1-36 map to bids.
-    - Action numbers 1...36: bid_value increases in increments of 10 starting at 80.
-        E.g., 1 = 80 heart, 2 = 80 spades, etc.
-    - 37 is coinche (ie. double the bet, but not the bet value)
-    - 38 is surcoinche (ie. double the bet again, but not the bet value)
-    - 39 is used for padding, and should not be sampled as an action.
-
-    :param action: action number
-    :return: (bid_value, atout_suit) or "pass"
-    """
-    if action == 0:
-        return "pass"
-    elif action == 37:
-        return "coinche"
-    elif action == 38:
-        return "surcoinche"
-    elif action == 39:
-        raise ValueError("Invalid action: 39 is used for padding and should not be sampled as an action.")
-    else:
-        bid_value = 80 + ((action - 1) // 4) * 10
-        trump_index = (action - 1) % 4
-        atout_suit = list(Suit)[trump_index]
-        return (bid_value, atout_suit)
 
 class GymCoinche(Env):
-    def __init__(self, players=None, contrat_model_path=None):
+    def __init__(self, players=None):
         # observation_space
         # 34 bids + 32 played cards + 32 player cards + 32 cards of current trick + attacker + bidding/trick phase
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
         self.observation_space = spaces.Box(low=0, high=1, shape=(132,))
         # 32 cards
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
-        self.action_space = spaces.Discrete(32)
+        self.action_space = spaces.Discrete(40)
 
         self.players = players if players is not None else [
             RandomPlayer(0, "N"),
@@ -68,33 +41,34 @@ class GymCoinche(Env):
             RandomPlayer(3, "W")
         ]
 
-        # Theo: Reorganization of the init would be nice to better separate phases
-        self.current_trick_rotation = []
         self.deck = Deck()
         self.round_number = 0
+
+        self.dealer_index = 0
+        self.current_bidding_player_index = (self.dealer_index + 1) % 4
+        self.bidding_history = []
+        self.bidding_history_length = 34 # 4 + 3 * 10, because card(90 to 160 + coinche + surcoinche)=10
+        self.current_bid = None
+        self.bid_winning_player = None
+        self.passes_in_row = 0
+        self.coinche_surcoinche = 0
+        self.bidding_done = False
+
+        self.attacker_team = 0
+        self.current_trick_rotation = []
         self.played_tricks = []
         self.trick = None
         self.atout_suit = None
         self.contract_value = None
         self.suits_order = None
-        # self.contrat_model = None # models.load_model(contrat_model_path) if contrat_model_path is not None else None
-        # print("Contrat model passed: ", contrat_model_path)
-        self.attacker_team = 0
         self.original_hands = {}
-
-        self.dealer_index = 0
-        self.bidding_history = []
-        self.current_bid = None
-        self.bid_winning_player = None
-        self.passes_in_row = 0
-        self.current_bidding_player_index = (self.dealer_index + 1) % 4
-        self.bidding_done = False
         self.total_score = 0
-        self.bidding_history_length = 34 # 4 + 3 * 10, because card(90 to 160 + coinche + surcoinche)=10
-        self.coinche_surcoinche = 0
 
 
     def reset(self, *, seed=None, options=None):
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
         self.round_number += 1
         self._rebuild_deck(self.played_tricks)
         self._deal_cards()
