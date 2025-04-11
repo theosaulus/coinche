@@ -16,7 +16,7 @@ PAD_ACTION = 43
 
 def make_env(env_id="coinche-v3", seed=None):
     def _init():
-        env =  gym.make(env_id)
+        env = gym.make(env_id)
         if seed is not None:
             env.reset(seed=seed)
         return env
@@ -27,11 +27,13 @@ def make_env(env_id="coinche-v3", seed=None):
 class GymCoinche(Env):
     def __init__(self, players=None):
         # observation_space
-        # 44 bids + 32 played cards + 32 player cards + 32 cards of current trick + attacker + bidding/trick phase
+        # 37 bids placed (at most) + 32 played cards + 32 player cards + 32 cards of current trick + attacker + bidding/trick phase
         # TODO: BIDS MUST BE BETTER ENCODED
-        self.observation_space = spaces.Box(low=0, high=1, shape=(142,))
-        # 32 cards
-        # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
+        self.bidding_history_length = 37 # 4 + 3 * 11, because cardinal(90 to 160 + 250 + coinche + surcoinche)=11
+        self.other_state_length = 98
+        self.observation_space = spaces.Box(low=0, high=1, shape=(135,))
+        # 32 cards: 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
+        # 44 bids: pass + (80 to 160 + capot) for each suit + coinche + surcoinche + padding
         self.action_space = spaces.Discrete(44)
 
         self.players = players if players is not None else [
@@ -40,17 +42,20 @@ class GymCoinche(Env):
             GymPlayer(2, "S"),
             RandomPlayer(3, "W")
         ]
-
+        self.tricks_reward_factor = 0.1
         self.deck = Deck()
         self.round_number = 0
+        self.reshuffle_deck_each_round = True
 
         self.dealer_index = 0
         self.current_bidding_player_index = (self.dealer_index + 1) % 4
         self.bidding_history = []
-        self.bidding_history_length = 37 # 4 + 3 * 11, because cardinal(90 to 160 + 250 + coinche + surcoinche)=11
-        self.current_bid = None
+        self.current_bid = None # tuple: (bid_value, atout_suit)
         self.bid_winning_player = None
         self.passes_in_row = 0
+
+        self.atout_suit = None
+        self.contract_value = None
         self.coinche_surcoinche = 0
         self.bidding_done = False
 
@@ -58,8 +63,6 @@ class GymCoinche(Env):
         self.current_trick_rotation = []
         self.played_tricks = []
         self.trick = None
-        self.atout_suit = None
-        self.contract_value = None
         self.suits_order = None
         self.original_hands = {}
         self.total_score = 0
@@ -85,9 +88,9 @@ class GymCoinche(Env):
         :return: observation, reward, done, info
         """
         if not self.bidding_done:
-            self.bidding_step(action)
+            return self.bidding_step(action)
         else:
-            self.trick_step(action)
+            return self.trick_step(action)
 
     def bidding_step(self, action):
         player = self.players[self.current_bidding_player_index]
@@ -104,6 +107,7 @@ class GymCoinche(Env):
         # Play automatically for other players until GymPlayer or end
         while not isinstance(self.players[self.current_bidding_player_index], GymPlayer) and not self.bidding_done:
             player = self.players[self.current_bidding_player_index]
+            valid_bids = self._get_valid_bid_actions(self.current_bid)
             action = player.bid(self.bidding_history, valid_bids, list(Suit))
             
             self._process_bidding(action, player)
@@ -120,13 +124,11 @@ class GymCoinche(Env):
 
         elif self.current_bid is not None and self.passes_in_row >= 3:
             self.bidding_done = True
-            self.contract_value, self.atout_suit = self.current_bid[0], self.current_bid[1]
-
-            if len(self.current_bid) == 3:
-                self.coinche_surcoinche = 1 if self.current_bid[2] == "coinche" else 2
+            self.contract_value, self.atout_suit = self.current_bid
             self.attacker_team = self.bid_winning_player.index % 2
             self.suits_order = Suit.create_order(self.atout_suit)
             self.start_trick_phase()
+            info = {}
 
         observation = self._get_current_observation()
         reward = 0
@@ -167,16 +169,12 @@ class GymCoinche(Env):
 
         # Handle end of trick
         winner = self.trick.winner
-        trick_score_factor = ai_player.index % 2 == winner.index % 2
-        reward = self._get_reward(self.trick,
-            self.total_score,
-            trick_score_factor,
-            self.contract_value
-        )
+        trick_score_factor = (ai_player.index % 2 == winner.index % 2) * self.tricks_reward_factor
+        reward = self._get_trick_reward(self.trick, trick_score_factor)
         self.played_tricks.append(self.trick) # add score to teams
 
         # Add trick score to total_score
-        self.total_score += self._get_trick_reward(self.trick, trick_score_factor)
+        self.total_score += self._get_trick_reward(self.trick, trick_score_factor=1)
 
         if len(self.played_tricks) < 8:
             self.trick = Trick(self.atout_suit, trick_number=len(self.played_tricks) + 1)
@@ -191,21 +189,65 @@ class GymCoinche(Env):
             terminated = False
             return observation, reward, terminated, False, info
         else:
+            # Compute points as in https://www.ffbelote.org/belote-contree/, Points annonces
             observation = self._get_round_observation()
             info = self.original_hands
-            # add 20 points in case of belote
-            if self.players[self.bid_winning_player.index].has_belote or self.players[(self.bid_winning_player.index + 2) % 4].has_belote:
-                self.total_score += 20
-                info["belote"] = True
+
+            # # add 20 points in case of belote
+            # if self.players[self.bid_winning_player.index].has_belote or self.players[(self.bid_winning_player.index + 2) % 4].has_belote:
+            #     self.total_score += 20
+            #     info["belote"] = True
+            # else:
+            #     info["belote"] = False
+            # # detect if capot
+            # attacker_trick_count = sum(1 for t in self.played_tricks if t.winner.index % 2 == self.attacker_team)
+            # if attacker_trick_count == 8:
+            #     self.total_score = 250  # overwrite any total score
+            #     info["capot"] = True
+            # info["total_reward"] = self.total_score
+            # terminated = True
+
+            attacker_score = self.total_score
+            contract = self.contract_value
+            capot_announced = (contract == 250)
+            capot_realized = sum(t.winner.index % 2 == self.attacker_team for t in self.played_tricks) == 8
+
+            multiplier = 1
+            if self.coinche_surcoinche == 1:
+                multiplier = 2
+            elif self.coinche_surcoinche == 2:
+                multiplier = 4
+
+            attacker_points = 0
+            defender_points = 0
+
+            if capot_announced:
+                if capot_realized:
+                    attacker_points = 250 * multiplier
+                else:
+                    defender_points = 250 * multiplier
+            elif attacker_score >= contract:
+                attacker_points = contract * multiplier
             else:
-                info["belote"] = False
-            # detect if capot
-            attacker_trick_count = sum(1 for t in self.played_tricks if t.winner.index % 2 == self.attacker_team)
-            if attacker_trick_count == 8:
-                self.total_score = 250  # overwrite any total score
-                info["capot"] = True
-            info["total_reward"] = self.total_score
+                defender_points = 160 * multiplier
+
+            belote_bonus = 20 if any(p.has_belote for p in self.players if p.attacker) else 0
+            attacker_points += belote_bonus
+
+            info["capot_realized"] = capot_realized
+            info["capot_announced"] = capot_announced
+            info["contract_value"] = contract
+            info["contract_realized"] = attacker_score >= contract
+            info["belote"] = belote_bonus > 0
+
+            info["attacker_score_raw"] = attacker_score
+            info["defender_score_raw"] = 162 - attacker_score
+
+            info["total_attacker_points"] = attacker_points
+            info["total_defender_points"] = defender_points
+
             terminated = True
+            reward = 0
             return observation, reward, terminated, False, info
 
 
@@ -226,13 +268,13 @@ class GymCoinche(Env):
         elif bid == "coinche":
             if self.current_bid is None:
                 raise RuntimeError("Coinche is not allowed before a bid.")
-            self.current_bid = (self.current_bid[0], self.current_bid[1], "coinche")
+            self.coinche_surcoinche = 1
             self.bid_winning_player = player
             self.passes_in_row = 0
         elif bid == "surcoinche":
-            if self.current_bid is None or self.current_bid[2] != "coinche":
+            if self.current_bid is None or self.coinche_surcoinche != 1:
                 raise RuntimeError("Surcoinche is not allowed before a coinche.")
-            self.current_bid = (self.current_bid[0], self.current_bid[1], "surcoinche")
+            self.coinche_surcoinche = 2
             self.bid_winning_player = player
             self.passes_in_row = 0
         else:
@@ -242,12 +284,15 @@ class GymCoinche(Env):
             self.passes_in_row = 0
     
     def _rebuild_deck(self, played_tricks):
-        # Check if duplicated cards
-        for p in self.players:
-            for trick in played_tricks:
-                if p.index == trick.winner.index:
-                    self.deck.add_trick(trick)
-        self.deck.cut_deck()
+        if self.reshuffle_deck_each_round:
+            self.deck = Deck()
+            self.deck.shuffle()
+        else:
+            for p in self.players:
+                for trick in played_tricks:
+                    if p.index == trick.winner.index:
+                        self.deck.add_trick(trick)
+            self.deck.cut_deck()
 
     def _deal_cards(self):
         """
@@ -281,19 +326,20 @@ class GymCoinche(Env):
             current_player = self.players[self.current_bidding_player_index]
             suits_order = list(Suit)
             current_player_attacker = 2 # 2 = bidding phase
+            trick_cards_observation = np.zeros(32) # no cards played yet
         
         else:
             played_cards = [card for trick in self.played_tricks for card in trick.cards]
             current_player = self.current_trick_rotation[0]
             suits_order = self.suits_order
             current_player_attacker = current_player.attacker
+            trick_cards_observation = convert_cards_to_vector(self.trick.cards, suits_order)
 
         bidding_history = [PAD_ACTION] * (self.bidding_history_length - len(self.bidding_history)) + self.bidding_history
         bidding_history_observation = np.array(bidding_history)
 
         played_cards_observation = convert_cards_to_vector(played_cards, suits_order)
         player_cards_observation = convert_cards_to_vector(current_player.cards, suits_order)
-        trick_cards_observation = convert_cards_to_vector(self.trick.cards, suits_order)
 
         observation = np.concatenate((bidding_history_observation,
                                       played_cards_observation,
@@ -336,30 +382,5 @@ class GymCoinche(Env):
         return rotation.tolist()
 
     def _get_trick_reward(self, trick, trick_score_factor):
-        score = trick.score()
+        score = trick.score() + 10 * (len(self.played_tricks) == 7) # add 10 to last trick
         return score * trick_score_factor
-
-    def _get_reward(self, trick, total_score, trick_score_factor, value, normalisation_trick=10):
-        # trick reward: if not last trick
-        if True:
-            score = trick.score() + 10 * (len(self.played_tricks) == 7) # add 10 to last trick
-            # score = trick.score()
-            if trick_score_factor:
-                return score  / normalisation_trick
-            else:
-                return - score / normalisation_trick
-        # if True:
-        #     score = trick.score()
-        #     if trick_score_factor:
-        #         return np.exp(score  / normalisation_trick)
-        #     else:
-        #         return - np.exp(score / normalisation_trick)
-
-        # if this is last trick of round
-        # else:
-        # # Let's check if contract is done
-        #     if ((total_score/10) - 8)/9 >= value:
-        #         return 9
-        #     else:
-        #         return -9
-

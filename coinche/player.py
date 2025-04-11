@@ -93,7 +93,6 @@ class DeterministicPlayer(RandomPlayer):
                 has_ace[card.suit] = True
 
         # Detect if opening or answering
-        # is_opening = all(bid == 0 for bid in bidding_history) if bidding_history else True
         partner_index = (self.index + 2) % 4
         partner_bids = [decode_bid_action(bid) for i, bid in enumerate(bidding_history) if i % 4 == partner_index]
         if not partner_bids:

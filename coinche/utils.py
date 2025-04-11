@@ -17,7 +17,7 @@ def convert_index_to_cards(cards_index, suits_order):
 def decode_bid_action(action):
     """
     Decode the action number into a bid value and trump suit.
-    There are 40 actions: 
+    There are 44 actions: 
     - 0 is "pass", 1-36 map to bids.
     - Action numbers 1...36: bid_value increases in increments of 10 starting at 80.
         E.g., 1 = 80 heart, 2 = 80 spades, etc.
