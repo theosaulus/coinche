@@ -6,13 +6,13 @@ from coinche.player import RandomPlayer, AIPlayer
 from coinche.gym.gymplayer import GymPlayer
 from coinche.trick import Trick
 from coinche.deck import Deck
-from coinche.card import Suit
+from coinche.card import Suit, Card
 from coinche.utils import convert_cards_to_vector, decode_bid_action
 from coinche.reward_prediction import decision_process
 
 from gymnasium import Env, spaces
 
-PAD_ACTION = 39
+PAD_ACTION = 43
 
 def make_env(env_id="coinche-v3", seed=None):
     def _init():
@@ -27,12 +27,12 @@ def make_env(env_id="coinche-v3", seed=None):
 class GymCoinche(Env):
     def __init__(self, players=None):
         # observation_space
-        # 34 bids + 32 played cards + 32 player cards + 32 cards of current trick + attacker + bidding/trick phase
-        # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
-        self.observation_space = spaces.Box(low=0, high=1, shape=(132,))
+        # 44 bids + 32 played cards + 32 player cards + 32 cards of current trick + attacker + bidding/trick phase
+        # TODO: BIDS MUST BE BETTER ENCODED
+        self.observation_space = spaces.Box(low=0, high=1, shape=(142,))
         # 32 cards
         # 8 atouts + 8 suit 1 + 8 suit 2 + 8 suit 3
-        self.action_space = spaces.Discrete(40)
+        self.action_space = spaces.Discrete(44)
 
         self.players = players if players is not None else [
             RandomPlayer(0, "N"),
@@ -47,7 +47,7 @@ class GymCoinche(Env):
         self.dealer_index = 0
         self.current_bidding_player_index = (self.dealer_index + 1) % 4
         self.bidding_history = []
-        self.bidding_history_length = 34 # 4 + 3 * 10, because card(90 to 160 + coinche + surcoinche)=10
+        self.bidding_history_length = 37 # 4 + 3 * 11, because cardinal(90 to 160 + 250 + coinche + surcoinche)=11
         self.current_bid = None
         self.bid_winning_player = None
         self.passes_in_row = 0
@@ -104,8 +104,7 @@ class GymCoinche(Env):
         # Play automatically for other players until GymPlayer or end
         while not isinstance(self.players[self.current_bidding_player_index], GymPlayer) and not self.bidding_done:
             player = self.players[self.current_bidding_player_index]
-            observation = self._get_current_observation()
-            action = player.bid(observation, valid_bids, list(Suit))
+            action = player.bid(self.bidding_history, valid_bids, list(Suit))
             
             self._process_bidding(action, player)
             self.current_bidding_player_index = (self.current_bidding_player_index + 1) % 4
@@ -137,6 +136,8 @@ class GymCoinche(Env):
     def start_trick_phase(self):
         for p in self.players:
             p.attacker = int(p.index % 2 == self.attacker_team)
+            if p.attacker:
+                p.has_belote = p.has_card(Card(5, self.atout_suit)) and p.has_card(Card(6, self.atout_suit))
 
         self.original_hands = {
             f"player{i}-hand": convert_cards_to_vector(player.cards, self.suits_order)
@@ -192,6 +193,17 @@ class GymCoinche(Env):
         else:
             observation = self._get_round_observation()
             info = self.original_hands
+            # add 20 points in case of belote
+            if self.players[self.bid_winning_player.index].has_belote or self.players[(self.bid_winning_player.index + 2) % 4].has_belote:
+                self.total_score += 20
+                info["belote"] = True
+            else:
+                info["belote"] = False
+            # detect if capot
+            attacker_trick_count = sum(1 for t in self.played_tricks if t.winner.index % 2 == self.attacker_team)
+            if attacker_trick_count == 8:
+                self.total_score = 250  # overwrite any total score
+                info["capot"] = True
             info["total_reward"] = self.total_score
             terminated = True
             return observation, reward, terminated, False, info

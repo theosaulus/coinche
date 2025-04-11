@@ -4,7 +4,7 @@ import torch.nn as nn
 import random
 
 from random import choice, sample
-from coinche.utils import convert_cards_to_vector, convert_index_to_cards
+from coinche.utils import convert_cards_to_vector, convert_index_to_cards, decode_bid_action, encode_bid_action
 from coinche.exceptions import PlayException
 from coinche.card import Suit
 
@@ -14,6 +14,7 @@ class Player:
         self.name = name
         self.cards = []
         self.attacker = None
+        self.has_belote = False
 
     def bid(self, observation, valid_bids, suits_order):
         raise NotImplementedError()
@@ -73,6 +74,61 @@ class DeterministicPlayer(RandomPlayer):
                 if action in valid_bids:
                     return action
         return 0
+
+    def bid(self, bidding_history, valid_bids, suits_order):
+        cards = self.cards
+        suit_counts = {suit: 0 for suit in suits_order}
+        has_jack = {}
+        has_nine = {}
+        has_ace = {}
+        bid_action = 0
+
+        for card in cards:
+            suit_counts[card.suit] += 1
+            if card.rank.name == "JACK":
+                has_jack[card.suit] = True
+            if card.rank.name == "NINE":
+                has_nine[card.suit] = True
+            if card.rank.name == "ACE":
+                has_ace[card.suit] = True
+
+        # Detect if opening or answering
+        # is_opening = all(bid == 0 for bid in bidding_history) if bidding_history else True
+        partner_index = (self.index + 2) % 4
+        partner_bids = [decode_bid_action(bid) for i, bid in enumerate(bidding_history) if i % 4 == partner_index]
+        if not partner_bids:
+            is_opening = True
+
+        if is_opening:
+            for suit in suits_order:
+                j = has_jack.get(suit, False)
+                n = has_nine.get(suit, False)
+                count = suit_counts[suit]
+                ace_else = any(s != suit and has_ace.get(s, False) for s in suits_order)
+                if j and n and (count >= 1 or ace_else):
+                    bid_action = encode_bid_action(90, suit)
+                elif (j or n) and (count >= 2 or (count >= 1 and ace_else)):
+                    bid_action = encode_bid_action(80, suit)
+
+        else:
+            if partner_bids:
+                partner_bid = partner_bids[-1]
+                value, suit = partner_bid
+                value_add = 0
+                if has_nine.get(suit, False):
+                    value_add += 10
+                if has_jack.get(suit, False):
+                    value_add += 20
+                for s in suits_order:
+                    if s != suit and has_ace.get(s, False):
+                        value_add += 10
+
+                new_value = value + value_add
+                if new_value > value:
+                    bid_action = encode_bid_action(new_value, suit)
+        
+        return bid_action if bid_action in valid_bids else 0
+
     
 class TorchPolicy(nn.Module):
     def __init__(self, input_dim=98, hidden_dim=128):
