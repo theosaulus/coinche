@@ -37,6 +37,7 @@ def decode_bid_action(action):
         atout_suit = list(Suit)[trump_index]
         return (bid_value, atout_suit)
     elif action in range(37, 41):
+        trump_index = (action - 1) % 4
         atout_suit = list(Suit)[trump_index]
         return (250, atout_suit) # capot is encoded as 250
     elif action == 41:
