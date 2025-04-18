@@ -52,24 +52,12 @@ def encode_bid_action(bid_value, suit):
     action = 1 + 4 * ((bid_value - 80) // 10) + suit_index
     return action
 
-def decode_observation(observation, bidding_history_length, suits_order):
-    # Takes np.array of observation and returns a dict
-    bidding_history = observation[:bidding_history_length]
-    played_cards_vector = observation[bidding_history_length:bidding_history_length + 32]
-    player_cards_vector = observation[bidding_history_length + 32:bidding_history_length + 64]
-    trick_cards_vector = observation[bidding_history_length + 64:bidding_history_length + 96]
-    contract_value = int(observation[bidding_history_length + 96])
-    current_player_attacker = int(observation[bidding_history_length + 97])
-
-    played_cards = convert_index_to_cards(np.where(played_cards_vector == 1)[0], suits_order)
-    player_cards = convert_index_to_cards(np.where(player_cards_vector == 1)[0], suits_order)
-    trick_cards = convert_index_to_cards(np.where(trick_cards_vector == 1)[0], suits_order)
-
+def decode_observation(obs_dict, suits_order):
     return {
-        "bidding_history": bidding_history,
-        "played_cards": played_cards,
-        "player_cards": player_cards,
-        "trick_cards": trick_cards,
-        "contract_value": contract_value,
-        "current_player_attacker": current_player_attacker,
+        "bids": obs_dict["bids"].astype(int).tolist(),
+        "played_cards": convert_index_to_cards(np.where(obs_dict["played_cards"]==1)[0], suits_order),
+        "player_cards": convert_index_to_cards(np.where(obs_dict["player_cards"]==1)[0], suits_order),
+        "trick_cards": convert_index_to_cards(np.where(obs_dict["trick_cards"]==1)[0], suits_order),
+        "current_scores": obs_dict["current_scores"].tolist(),
+        "extra": obs_dict["extra"].tolist(),
     }

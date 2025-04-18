@@ -6,7 +6,7 @@ import random
 from random import choice, sample
 from coinche.utils import convert_cards_to_vector, convert_index_to_cards, decode_bid_action, encode_bid_action
 from coinche.exceptions import PlayException
-from coinche.card import Suit
+from coinche.card import Card
 
 class Player:
     def __init__(self, index, name):
@@ -15,8 +15,10 @@ class Player:
         self.cards = []
         self.attacker = None
         self.has_belote = False
+        self.self_current_score = 0
+        self.opponent_current_score = 0
 
-    def bid(self, bidding_history, valid_bids, suits_order):
+    def bid(self, obs, valid_bids, suits_order):
         raise NotImplementedError()
 
     def add_cards(self, cards):
@@ -42,8 +44,8 @@ class Player:
     def remove_card(self, card):
         self.cards.remove(card)
 
-    def play_turn(self, trick, played_tricks, suits_order, contract_value):
-        cards_order = self.get_cards_order(trick, played_tricks, suits_order, contract_value)
+    def play_turn(self, trick, obs, suits_order):
+        cards_order = self.get_cards_order(obs, suits_order)
         for card in cards_order:
             try:
                 trick.add_card(card, self)
@@ -52,22 +54,22 @@ class Player:
             except PlayException as e:
                 continue
 
-    def get_cards_order(self, trick, played_tricks, suits_order, contract_value):
+    def get_cards_order(self, obs, suits_order):
         raise NotImplementedError()
 
 
 class RandomPlayer(Player):
-    def get_cards_order(self, _trick, _played_tricks, _suits_order, _contract_value):
+    def get_cards_order(self, obs, suits_order):
         return sample(self.cards, len(self.cards))
 
-    def bid(self, bidding_history, valid_bids, suits_order):
+    def bid(self, obs, valid_bids, suits_order):
         return random.choice(valid_bids)
 
 class DeterministicPlayer(RandomPlayer):
-    def get_cards_order(self, trick, _played_tricks, _suits_order, _contract_value):
+    def get_cards_order(self, obs, suits_order):
         return self.cards
 
-    def bid(self, bidding_history, valid_bids, suits_order):
+    def bid(self, obs, valid_bids, suits_order):
         cards = self.cards
         suit_counts = {suit: 0 for suit in suits_order}
         has_jack = {}
@@ -86,7 +88,7 @@ class DeterministicPlayer(RandomPlayer):
 
         # Detect if opening or answering
         partner_index = (self.index + 2) % 4
-        partner_bids = [decode_bid_action(bid) for i, bid in enumerate(bidding_history) if i % 4 == partner_index]
+        partner_bids = [decode_bid_action(bid) for i, bid in enumerate(obs["bids"]) if i % 4 == partner_index]
         if not partner_bids:
             is_opening = True
 
@@ -120,50 +122,119 @@ class DeterministicPlayer(RandomPlayer):
         
         return bid_action if bid_action in valid_bids else 0
 
-    
-class TorchPolicy(nn.Module):
-    def __init__(self, input_dim=98, hidden_dim=128):
+
+class SharedPolicy(nn.Module):
+    def __init__(self, obs_dim=140, hidden_dim=128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(obs_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 32),  # 32 possible cards
-            nn.Softmax(dim=-1)
         )
+    def forward(self, x):
+        return self.net(x)
 
+class BidHead(nn.Module):
+    def __init__(self, hidden_dim=128, n_actions=44):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim, n_actions),
+            nn.Softmax(dim=-1),
+        )
+    def forward(self, x):
+        return self.net(x)
+
+class TrickHead(nn.Module):
+    def __init__(self, hidden_dim=128, n_actions=32):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim, n_actions),
+            nn.Softmax(dim=-1),
+        )
     def forward(self, x):
         return self.net(x)
 
 
+
 class AIPlayer(Player):
-    def __init__(self, policy_path=None, *args, **kwargs):
-        super(AIPlayer, self).__init__(*args, **kwargs)
-        self.model = TorchPolicy()
+    def __init__(self, trick_model_path=None, bid_model_path=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
-        if policy_path:
-            self.model.load_state_dict(torch.load(policy_path, map_location=self.device))
-        self.model.eval()
 
-    def get_cards_order(self, trick, played_tricks, suits_order, contract_value):
-        played_cards = [card for trick in played_tricks for card in trick.cards]
-        played_cards_obs = convert_cards_to_vector(played_cards, suits_order)
-        player_cards_obs = convert_cards_to_vector(self.cards, suits_order)
-        trick_cards_obs = convert_cards_to_vector(trick.cards, suits_order)
-        obs = np.concatenate((played_cards_obs, player_cards_obs, trick_cards_obs, [contract_value / 9, self.attacker]))
+        # Instantiate shared + two heads
+        self.shared    = SharedPolicy().to(self.device)
+        self.bid_head  = BidHead().to(self.device)
+        self.trick_head= TrickHead().to(self.device)
 
-        obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+        # Load weights if provided
+        if trick_model_path:
+            state = torch.load(trick_model_path, map_location=self.device)
+            self.trick_head.load_state_dict(state["trick_head"])
+            self.shared.load_state_dict(state["shared"], strict=False)
+        if bid_model_path:
+            state = torch.load(bid_model_path, map_location=self.device)
+            self.bid_head.load_state_dict(state["bid_head"])
+            self.shared.load_state_dict(state["shared"], strict=False)
+
+        self.shared.eval()
+        self.bid_head.eval()
+        self.trick_head.eval()
+
+    def bid(self, obs, valid_bids, suits_order):
+        # obs: dict, valid_bids: list
+        vec = np.concatenate([
+            obs["bids"],                   # (37,)
+            obs["played_cards"],           # (32,)
+            obs["player_cards"],           # (32,)
+            obs["trick_cards"],            # (32,)
+            obs["current_scores"] / 162.0, # (2,) normalize
+            obs["extra"],                  # (5,)
+        ], axis=0).astype(np.float32)      # total dim = 140
+
+        t = torch.from_numpy(vec).to(self.device).unsqueeze(0)
         with torch.no_grad():
-            logits = self.model(obs_tensor).squeeze(0).cpu().numpy()
+            features = self.shared(t)
+            probs = self.bid_head(features).squeeze(0) # (44,)
 
-        masked_logits = logits * player_cards_obs
-        if np.max(masked_logits) > 0:
-            card_indices = np.argsort(-masked_logits)
+        mask = torch.zeros_like(probs)
+        mask[valid_bids] = 1.0
+        masked = probs * mask
+
+        if masked.sum() > 0:
+            dist = masked / masked.sum()
+            action = int(torch.multinomial(dist, 1).item())
         else:
-            card_indices = np.argsort(-player_cards_obs)
-        return convert_index_to_cards(card_indices, suits_order)
+            action = random.choice(valid_bids)
+        return action
+
+    def get_cards_order(self, obs, suits_order):
+        vec = np.concatenate([
+            obs["bids"], 
+            obs["played_cards"], 
+            obs["player_cards"],
+            obs["trick_cards"], 
+            obs["current_scores"]/162.0, 
+            obs["extra"]
+        ], axis=0).astype(np.float32)
+
+        t = torch.from_numpy(vec).to(self.device).unsqueeze(0)
+        with torch.no_grad():
+            feats = self.shared(t)
+            probs = self.trick_head(feats).squeeze(0)  # (32,)
+
+        # mask to only your actual cards
+        card_mask = torch.from_numpy(obs["player_cards"]).to(self.device)
+        masked = probs * card_mask
+
+        if masked.sum() > 0:
+            dist = masked / masked.sum()
+            idx = int(torch.multinomial(dist, 1).item())
+        else:
+            # fallback to random card you hold
+            hold_idx = np.where(obs["player_cards"]>0)[0]
+            idx = int(random.choice(hold_idx))
+
+        # now build play order: sample first, then the rest in any order
+        chosen = Card.from_index(idx, suits_order)
+        rest   = [c for c in self.cards if c != chosen]
+        return [chosen] + rest
     
-    def bid(self, bidding_history, valid_bids, suits_order):
-        # Have part of the NN to predict the bid
-        # Have some shared weights with the tricks, potentially
-        return NotImplementedError()

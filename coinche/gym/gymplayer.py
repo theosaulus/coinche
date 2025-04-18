@@ -27,7 +27,7 @@ class GymPlayer(Player):
         self.next_action = None
         return cards_play_order
 
-    def bid(self, hand, bidding_history, valid_bids, suits_order):
+    def bid(self, bidding_history, valid_bids, suits_order):
         # Theo: NOT SURE ABOUT THIS ONE
         if self.next_action is None:
             raise RuntimeError("GymPlayer bidding: no action set.")
