@@ -11,7 +11,7 @@ class Deck:
                 self.cards.append(Card(rank, suit))
 
     def shuffle(self):
-        rand.shuffle(self.cards, rand.random)
+        rand.shuffle(self.cards)
 
     def deal(self, number_of_cards):
         cards = []

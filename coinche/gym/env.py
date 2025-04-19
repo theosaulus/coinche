@@ -35,7 +35,7 @@ class GymCoinche(Env):
         self.bidding_history_length = 37 # 4 + 3 * 11, because cardinal(90 to 160 + 250 + coinche + surcoinche)=11
         self.other_state_length = 98
         self.observation_space = spaces.Dict({
-            "bids":         spaces.Box(0, PAD_ACTION, (self.bidding_history_length,), dtype=np.int32),
+            "bids":         spaces.Box(0, float(PAD_ACTION), (self.bidding_history_length,), dtype=np.float32),
             "played_cards": spaces.Box(0.0, 1.0, (32,), dtype=np.float32),
             "player_cards": spaces.Box(0.0, 1.0, (32,), dtype=np.float32),
             "trick_cards":  spaces.Box(0.0, 1.0, (32,), dtype=np.float32),
@@ -88,7 +88,8 @@ class GymCoinche(Env):
             np.random.seed(seed)
         self.round_number += 1
         self._rebuild_deck(self.played_tricks)
-        for p in self.players: 
+        for p in self.players:
+            p.attacker = False
             p.self_current_score = 0
             p.opponent_current_score = 0
         self._deal_cards()
@@ -110,6 +111,7 @@ class GymCoinche(Env):
             return self.trick_step(action)
 
     def bidding_step(self, action):
+        info = {}
         player = self.players[self.current_bidding_player_index]
         if not isinstance(player, GymPlayer):
             raise RuntimeError("Not GymPlayer's turn to bid")
@@ -125,7 +127,7 @@ class GymCoinche(Env):
         while not isinstance(self.players[self.current_bidding_player_index], GymPlayer) and not self.bidding_done:
             player = self.players[self.current_bidding_player_index]
             valid_bids = self._get_valid_bid_actions(self.current_bid)
-            obs, _ = self._get_current_observation()
+            obs = self._get_current_observation()
             action = player.bid(obs, valid_bids, self.suits_order or list(Suit))
             
             self._process_bidding(action, player)
@@ -182,7 +184,7 @@ class GymCoinche(Env):
         action_vector[action] = 1
         ai_player.set_next_action(action_vector)
 
-        obs, _ = self._get_current_observation()
+        obs = self._get_current_observation()
         ai_player.play_trick(self.trick, obs, self.suits_order)
         self.current_trick_rotation.pop(0)
 
@@ -334,7 +336,7 @@ class GymCoinche(Env):
             current_player = self.current_trick_rotation[0]
             if isinstance(current_player, GymPlayer):
                 break
-            obs, _ = self._get_current_observation()
+            obs = self._get_current_observation()
             current_player.play_trick(self.trick, obs, self.suits_order)
             self.current_trick_rotation.pop(0)
 
