@@ -3,10 +3,14 @@ import torch
 import torch.nn as nn
 import random
 
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional, Union
+
 from random import choice, sample
 from coinche.utils import convert_cards_to_vector, convert_index_to_cards, decode_bid_action, encode_bid_action
 from coinche.exceptions import PlayException
-from coinche.card import Card
+from coinche.card import Card, Suit
+from coinche.trick import Trick
 
 class Player:
     def __init__(self, index, name):
@@ -18,9 +22,6 @@ class Player:
         self.self_current_score = 0
         self.opponent_current_score = 0
 
-    def bid(self, obs, valid_bids, suits_order):
-        raise NotImplementedError()
-
     def add_cards(self, cards):
         self.cards += cards
 
@@ -28,47 +29,68 @@ class Player:
         return card in self.cards
 
     def has_suit(self, suit):
-        for card in self.cards:
-            if card.suit == suit:
-                return True
-        return False
+        return any(card.suit == suit for card in self.cards)
 
     def get_suit_card(self, suit):
-        suit_cards = []
-
-        for card in self.cards:
-            if card.suit == suit:
-                suit_cards.append(card)
-        return suit_cards
+        return [card for card in self.cards if card.suit == suit]
 
     def remove_card(self, card):
-        self.cards.remove(card)
+        self.cards.remove(card)   
 
-    def play_turn(self, trick, obs, suits_order):
-        cards_order = self.get_cards_order(obs, suits_order)
-        for card in cards_order:
-            try:
-                trick.add_card(card, self)
-                self.remove_card(card)
-                break
-            except PlayException as e:
-                continue
+    @abstractmethod
+    def bid(
+        self,
+        obs: Dict[str, Union[np.ndarray, float]],
+        valid_bids: List[int],
+        suits_order: List[Suit],
+    ) -> int:
+        """
+        Choose a bid action given observation and valid bids.
 
-    def get_cards_order(self, obs, suits_order):
-        raise NotImplementedError()
+        :param obs: Current game observation.
+        :param valid_bids: List of valid bid action indices.
+        :param suits_order: Ordering of suits for indexing.
+        :return: Selected bid action index.
+        """
+        ...
+
+    @abstractmethod
+    def play_trick(
+        self,
+        trick: Trick,
+        obs: Dict[str, Union[np.ndarray, float]],
+        suits_order: List[Suit],
+    ) -> None:
+        """
+        Play a card on the given trick.
+
+        :param trick: Current trick instance.
+        :param obs: Current game observation.
+        :param suits_order: Ordering of suits for indexing.
+        """
+        ...
 
 
 class RandomPlayer(Player):
-    def get_cards_order(self, obs, suits_order):
-        return sample(self.cards, len(self.cards))
-
     def bid(self, obs, valid_bids, suits_order):
         return random.choice(valid_bids)
+    
+    def play_trick(self, trick, obs, suits_order):
+        cards = self.cards.copy()
+        random.shuffle(cards)
+        valid_mask = np.array([
+            trick._assert_valid_play_TrueFalse(card, self) for card in cards
+        ], dtype=bool)
+
+        cards = np.where(valid_mask)[0]
+        if cards.size == 0:
+            raise PlayException("No valid cards to play")
+        cards = sample(cards, len(cards))
+
+        trick.add_card(cards[0], self)
+        self.remove_card(cards[0])
 
 class DeterministicPlayer(RandomPlayer):
-    def get_cards_order(self, obs, suits_order):
-        return self.cards
-
     def bid(self, obs, valid_bids, suits_order):
         cards = self.cards
         suit_counts = {suit: 0 for suit in suits_order}
@@ -121,6 +143,19 @@ class DeterministicPlayer(RandomPlayer):
                     bid_action = encode_bid_action(new_value, suit)
         
         return bid_action if bid_action in valid_bids else 0
+    
+    def play_trick(self, trick, obs, suits_order):
+        cards = self.cards.copy()
+        valid_mask = np.array([
+            trick._assert_valid_play_TrueFalse(card, self) for card in cards
+        ], dtype=bool)
+
+        cards = np.where(valid_mask)[0]
+        if cards.size == 0:
+            raise PlayException("No valid cards to play")
+        cards.sort(key=lambda x: (x.suit != trick.trump, x.rank), reverse=True)
+        trick.add_card(cards[0], self)
+        self.remove_card(cards[0])
 
 
 class SharedPolicy(nn.Module):
@@ -154,13 +189,11 @@ class TrickHead(nn.Module):
         return self.net(x)
 
 
-
 class AIPlayer(Player):
     def __init__(self, trick_model_path=None, bid_model_path=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Instantiate shared + two heads
         self.shared    = SharedPolicy().to(self.device)
         self.bid_head  = BidHead().to(self.device)
         self.trick_head= TrickHead().to(self.device)
@@ -206,7 +239,7 @@ class AIPlayer(Player):
             action = random.choice(valid_bids)
         return action
 
-    def get_cards_order(self, obs, suits_order):
+    def play_trick(self, trick, obs, suits_order):
         vec = np.concatenate([
             obs["bids"], 
             obs["played_cards"], 
@@ -222,19 +255,17 @@ class AIPlayer(Player):
             probs = self.trick_head(feats).squeeze(0)  # (32,)
 
         # mask to only your actual cards
-        card_mask = torch.from_numpy(obs["player_cards"]).to(self.device)
-        masked = probs * card_mask
+        valid_mask = torch.tensor([
+            trick._assert_valid_play_TrueFalse(card, self) for card in self.cards
+        ], dtype=torch.bool, device=self.device)
+        masked = probs * valid_mask
 
         if masked.sum() > 0:
-            dist = masked / masked.sum()
+            dist = torch.softmax(masked, dim=-1)
             idx = int(torch.multinomial(dist, 1).item())
         else:
-            # fallback to random card you hold
-            hold_idx = np.where(obs["player_cards"]>0)[0]
-            idx = int(random.choice(hold_idx))
-
-        # now build play order: sample first, then the rest in any order
-        chosen = Card.from_index(idx, suits_order)
-        rest   = [c for c in self.cards if c != chosen]
-        return [chosen] + rest
-    
+            raise PlayException("No valid cards to play")
+        
+        card = convert_index_to_cards(idx, suits_order)[0]
+        trick.add_card(card, self)
+        self.remove_card(card)

@@ -183,7 +183,7 @@ class GymCoinche(Env):
         ai_player.set_next_action(action_vector)
 
         obs, _ = self._get_current_observation()
-        ai_player.play_turn(self.trick, obs, self.suits_order)
+        ai_player.play_trick(self.trick, obs, self.suits_order)
         self.current_trick_rotation.pop(0)
 
         # Then play until end of trick
@@ -335,7 +335,7 @@ class GymCoinche(Env):
             if isinstance(current_player, GymPlayer):
                 break
             obs, _ = self._get_current_observation()
-            current_player.play_turn(self.trick, obs, self.suits_order)
+            current_player.play_trick(self.trick, obs, self.suits_order)
             self.current_trick_rotation.pop(0)
 
     def _get_current_observation(self):

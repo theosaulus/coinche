@@ -2,7 +2,9 @@ import numpy as np
 
 from coinche.player import Player
 from coinche.utils import convert_cards_to_vector, convert_index_to_cards
-
+from coinche.exceptions import PlayException
+from coinche.card import Card, Suit
+from coinche.trick import Trick
 
 class GymPlayer(Player):
     def __init__(self, *args, **kwargs):
@@ -12,25 +14,25 @@ class GymPlayer(Player):
     def set_next_action(self, action):
         self.next_action = action
 
-    def get_cards_order(self, _trick, _played_tricks, suits_order, _contract_value):
+    def play_trick(self, trick, obs, suits_order):
         if self.next_action is None:
-            raise RuntimeError("Action should be filled.")
-        player_cards_observation = convert_cards_to_vector(self.cards, suits_order)
-        player_action_masked = player_cards_observation * self.next_action
-
-        # Play cards in probability order
-        if np.max(player_action_masked) > 0:
-            cards_index = np.argsort(-player_action_masked)
-        else:
-            cards_index = np.argsort(-player_cards_observation)
-        cards_play_order = convert_index_to_cards(cards_index, suits_order)
+            raise RuntimeError("No action set for GymPlayer.play_trick")
+        
+        action = self.next_action
         self.next_action = None
-        return cards_play_order
+
+        action_card = convert_index_to_cards(action, suits_order)[0]
+        if trick.assert_valid_play_TrueFalse(action_card, self):
+            trick.add_card(action_card, self)
+            self.remove_card(action_card)
+        else:
+            raise PlayException("GymPlayer: invalid action")
 
     def bid(self, bidding_history, valid_bids, suits_order):
-        # Theo: NOT SURE ABOUT THIS ONE
         if self.next_action is None:
             raise RuntimeError("GymPlayer bidding: no action set.")
         action = self.next_action
         self.next_action = None
-        return action if action in valid_bids else 0
+        if action not in valid_bids:
+            raise ValueError("Invalid action: action is not in valid bids.")
+        return action
