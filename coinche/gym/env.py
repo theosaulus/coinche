@@ -33,7 +33,6 @@ class GymCoinche(Env):
         #   current_scores (2,) = [attacker_score, defender_score]
         #   extra          (5,) = [phase, contract, atout_code, coinche_surcoinche, phase_flag]       
         self.bidding_history_length = 37 # 4 + 3 * 11, because cardinal(90 to 160 + 250 + coinche + surcoinche)=11
-        self.other_state_length = 98
         self.observation_space = spaces.Dict({
             "bids":         spaces.Box(0, float(PAD_ACTION), (self.bidding_history_length,), dtype=np.float32),
             "played_cards": spaces.Box(0.0, 1.0, (32,), dtype=np.float32),
@@ -66,7 +65,7 @@ class GymCoinche(Env):
         self.bids = []
         self.current_bid = None # tuple: (bid_value, atout_suit)
         self.bid_winning_player = None
-        self.passes_in_row = 0
+        self.passes_in_row = 0 #TODO: Check if bidding is ok for the first turn
 
         self.atout_suit = None
         self.contract_value = None
@@ -433,6 +432,19 @@ class GymCoinche(Env):
             min_action_index = 1 + 4 * ((min_bid_value - 80) // 10)
             valid = list(range(min_action_index, 42)) + [0]  # all possible bids except surcoinche + pass
             return valid
+    
+    def _get_valid_trick_actions(self, trick):
+        valid_actions = []
+        for card in self.current_trick_rotation[0].cards:
+            if trick.assert_valid_play_TrueFalse(card, self.current_trick_rotation[0]):
+                valid_actions.append(card.to_index(self.suits_order))
+        return valid_actions
+    
+    def _legal_action(self):
+        if not self.bidding_done:
+            return self._get_valid_bid_actions(self.current_bid)
+        else:
+            return self._get_valid_trick_actions(self.trick)
 
     def _create_trick_rotation(self, starting_player_index):
         rotation = np.array(self.players)

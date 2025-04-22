@@ -1,3 +1,5 @@
+from sb3_contrib.ppo_mask import MaskablePPO
+
 def get_algorithm(config, env):
     algo = config["algorithm"].upper()
     common_kwargs = dict(
@@ -10,7 +12,6 @@ def get_algorithm(config, env):
         learning_rate=config.get("lr", 3e-4),
     )
     if algo == "PPO":
-        from sb3_contrib.ppo_mask import MaskablePPO
         return MaskablePPO(**common_kwargs)
     else:
         raise NotImplementedError(f"Algorithm {algo} is not implemented.")
