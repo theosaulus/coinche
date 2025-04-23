@@ -76,19 +76,16 @@ class RandomPlayer(Player):
         return random.choice(valid_bids)
     
     def play_trick(self, trick, obs, suits_order):
-        cards = self.cards.copy()
-        random.shuffle(cards)
-        valid_mask = np.array([
-            trick._assert_valid_play_TrueFalse(card, self) for card in cards
-        ], dtype=bool)
-
-        cards = np.where(valid_mask)[0]
-        if cards.size == 0:
+        legal_cards = [
+            card for card in self.cards
+            if trick._assert_valid_play_TrueFalse(card, self)
+        ]
+        if not legal_cards:
             raise PlayException("No valid cards to play")
-        cards = sample(cards.tolist(), len(cards))
 
-        trick.add_card(cards[0], self)
-        self.remove_card(cards[0])
+        card = random.choice(legal_cards)
+        trick.add_card(card, self)
+        self.remove_card(card)
 
 class DeterministicPlayer(RandomPlayer):
     def bid(self, obs, valid_bids, suits_order):
@@ -145,17 +142,19 @@ class DeterministicPlayer(RandomPlayer):
         return bid_action if bid_action in valid_bids else 0
     
     def play_trick(self, trick, obs, suits_order):
-        cards = self.cards.copy()
-        valid_mask = np.array([
-            trick._assert_valid_play_TrueFalse(card, self) for card in cards
-        ], dtype=bool)
-
-        cards = np.where(valid_mask)[0]
-        if cards.size == 0:
+        legal_cards = [
+            card for card in self.cards
+            if trick._assert_valid_play_TrueFalse(card, self)
+        ]
+        if not legal_cards:
             raise PlayException("No valid cards to play")
-        cards.sort(key=lambda x: (x.suit != trick.trump, x.rank), reverse=True)
-        trick.add_card(cards[0], self)
-        self.remove_card(cards[0])
+
+        # sort them however you like, then pick the first
+        legal_cards.sort(key=lambda c: (c.suit != trick.trump, c.rank), reverse=True)
+        card = legal_cards[0]
+
+        trick.add_card(card, self)
+        self.remove_card(card)
 
 
 class SharedPolicy(nn.Module):

@@ -22,11 +22,11 @@ class GymPlayer(Player):
         self.next_action = None
 
         action_card = convert_index_to_cards(action, suits_order)[0]
-        if trick.assert_valid_play_TrueFalse(action_card, self):
+        if trick._assert_valid_play_TrueFalse(action_card, self):
             trick.add_card(action_card, self)
             self.remove_card(action_card)
         else:
-            raise PlayException("GymPlayer: invalid action")
+            raise PlayException(f"GymPlayer: invalid action {action}, trick is {trick.cards} and action card is {action_card}.")
 
     def bid(self, bidding_history, valid_bids, suits_order):
         if self.next_action is None:

@@ -40,7 +40,7 @@ class Card:
     def from_index(card_index, suits_order):
         card_rank = (card_index % 8)
         card_suit = card_index // 8
-        return Card(Rank(card_rank), Suit(suits_order[card_suit]))
+        return Card(Rank(card_rank), Suit(suits_order[int(card_suit)]))
 
 
 class Suit(Enum):

@@ -110,8 +110,7 @@ class GymCoinche(Env):
         if action not in valid_bids:
             raise RuntimeError(
                 f"Invalid bid {action} for player {player.index}, "
-                f"valid bids are {valid_bids}, current bid {self.current_bid}, "
-                f"current player is {player.index} (bidding phase) "
+                f"valid bids are {valid_bids}, current bid {self.current_bid}"
             )
 
         self._process_bidding(action, player)
@@ -335,7 +334,7 @@ class GymCoinche(Env):
 
     def _get_current_observation(self):
         # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
-        if not self.bidding_done:
+        if not self.bidding_done or (self.bidding_done and not self.current_trick_rotation):
             played_cards = []
             current_player = self.players[self.current_bidding_player_index]
             suits_order = list(Suit)
@@ -429,7 +428,7 @@ class GymCoinche(Env):
     def _get_valid_trick_actions(self, trick):
         valid_actions = []
         for card in self.current_trick_rotation[0].cards:
-            if trick.assert_valid_play_TrueFalse(card, self.current_trick_rotation[0]):
+            if trick._assert_valid_play_TrueFalse(card, self.current_trick_rotation[0]):
                 valid_actions.append(card.to_index(self.suits_order))
         return valid_actions
     
@@ -438,6 +437,13 @@ class GymCoinche(Env):
             return self._get_valid_bid_actions(self.current_bid)
         else:
             return self._get_valid_trick_actions(self.trick)
+        
+    def get_action_mask(self):
+        # For stable-baslines3
+        legal_actions = self._legal_action()
+        action_mask = np.zeros(self.action_space.n, dtype=np.float32)
+        action_mask[legal_actions] = 1.0
+        return action_mask
 
     def _create_trick_rotation(self, starting_player_index):
         rotation = np.array(self.players)
