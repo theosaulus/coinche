@@ -52,6 +52,16 @@ def encode_bid_action(bid_value, suit):
     action = 1 + 4 * ((bid_value - 80) // 10) + suit_index
     return action
 
+def obs_dict_to_vector(obs_dict):
+    return np.concatenate([
+            obs_dict["bids"], 
+            obs_dict["played_cards"], 
+            obs_dict["player_cards"],
+            obs_dict["trick_cards"], 
+            obs_dict["current_scores"]/162.0, 
+            obs_dict["extra"]
+        ], axis=0).astype(np.float32)
+
 def decode_observation(obs_dict, suits_order):
     return {
         "bids": obs_dict["bids"].astype(int).tolist(),

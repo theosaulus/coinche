@@ -33,18 +33,8 @@ class GymCoinche(Env):
         #   current_scores (2,) = [attacker_score, defender_score]
         #   extra          (5,) = [phase, contract, atout_code, coinche_surcoinche, phase_flag]       
         self.bidding_history_length = 37 # 4 + 3 * 11, because cardinal(90 to 160 + 250 + coinche + surcoinche)=11
-        self.observation_space = spaces.Dict({
-            "bids":         spaces.Box(0, float(PAD_ACTION), (self.bidding_history_length,), dtype=np.float32),
-            "played_cards": spaces.Box(0.0, 1.0, (32,), dtype=np.float32),
-            "player_cards": spaces.Box(0.0, 1.0, (32,), dtype=np.float32),
-            "trick_cards":  spaces.Box(0.0, 1.0, (32,), dtype=np.float32),
-            "current_scores": spaces.Box(0.0, 162.0, (2,), dtype=np.float32),
-            "extra":        spaces.Box(
-                                low=np.array([0.0,   0.0, -1.0, 0.0, 0.0], dtype=np.float32),
-                                high=np.array([1.0, 250.0,  3.0, 2.0, 1.0], dtype=np.float32),
-                                shape=(5,), dtype=np.float32
-                            ),
-        })        
+        self.observation_space = spaces.Box(-1.0, 250.0, (self.bidding_history_length + 32 + 32 + 32 + 2 + 5,), dtype=np.float32)
+
         # unified action space for both phases
         self.action_space = spaces.Discrete(44)
 
@@ -94,6 +84,7 @@ class GymCoinche(Env):
         self._deal_cards()
         self._init_bidding_phase()
         self.played_tricks = []
+        self._play_until_end_of_rotation_or_ai_play()
         return self._get_current_observation(), {}
 
 
@@ -102,7 +93,7 @@ class GymCoinche(Env):
         step is mandatory to use gym framework
         In each step, every player play exactly one, especially the AIPlayers.
         :param action: action to play (either bid or trick)
-        :return: observation, reward, done, info
+        :return: obs, reward, done, info
         """
         if not self.bidding_done:
             return self.bidding_step(action)
@@ -117,29 +108,24 @@ class GymCoinche(Env):
 
         valid_bids = self._get_valid_bid_actions(self.current_bid)
         if action not in valid_bids:
-            raise RuntimeError(f"Invalid bid {action} for player {player.index}")
+            raise RuntimeError(
+                f"Invalid bid {action} for player {player.index}, "
+                f"valid bids are {valid_bids}, current bid {self.current_bid}, "
+                f"current player is {player.index} (bidding phase) "
+            )
 
         self._process_bidding(action, player)
         self.current_bidding_player_index = (self.current_bidding_player_index + 1) % 4
-
-        # Play automatically for other players until GymPlayer or end
-        while not isinstance(self.players[self.current_bidding_player_index], GymPlayer) and not self.bidding_done:
-            player = self.players[self.current_bidding_player_index]
-            valid_bids = self._get_valid_bid_actions(self.current_bid)
-            obs = self._get_current_observation()
-            action = player.bid(obs, valid_bids, self.suits_order or list(Suit))
-            
-            self._process_bidding(action, player)
-            self.current_bidding_player_index = (self.current_bidding_player_index + 1) % 4
+        self._play_until_end_of_rotation_or_ai_play() # Play automatically for other players until GymPlayer or end
 
         if self.current_bid is None and len(self.bids) >= 4:
             # Everyone passed without bid: end of the round, bad reward to everyone
-            observation = self._get_current_observation()
+            obs = self._get_current_observation()
             reward = -10
             info = self.original_hands
             info["total_reward"] = -10
             terminated = True
-            return observation, reward, terminated, False, info
+            return obs, reward, terminated, False, info
 
         elif self.current_bid is not None and self.passes_in_row >= 3:
             self.bidding_done = True
@@ -149,10 +135,10 @@ class GymCoinche(Env):
             self.start_trick_phase()
             info = {}
 
-        observation = self._get_current_observation()
+        obs = self._get_current_observation()
         reward = 0
         terminated = False
-        return observation, reward, terminated, False, info
+        return obs, reward, terminated, False, info
 
     def start_trick_phase(self):
         for p in self.players:
@@ -214,15 +200,15 @@ class GymCoinche(Env):
             self.current_trick_rotation = self._create_trick_rotation(winner.index)
             # Play until AI
             self._play_until_end_of_rotation_or_ai_play()
-            observation = self._get_current_observation()
+            obs = self._get_current_observation()
             winning_team = 0 if winner.index % 2 == 0 else 1
             info = {'winner': winner.index,
                     'winning_team': winning_team}
             terminated = False
-            return observation, reward, terminated, False, info
+            return obs, reward, terminated, False, info
         else:
             # Compute points as in https://www.ffbelote.org/belote-contree/, Points annonces
-            observation = self._get_round_observation()
+            obs = self._get_round_observation()
             info = self.original_hands
 
             attacker_score = self.total_score
@@ -266,7 +252,7 @@ class GymCoinche(Env):
 
             terminated = True
             reward = 0
-            return observation, reward, terminated, False, info
+            return obs, reward, terminated, False, info
 
 
     def _init_bidding_phase(self):
@@ -331,13 +317,21 @@ class GymCoinche(Env):
         - Not an AIPlayer: therefore the current player just play given is deterministic (or random) policy
         :return:
         """
-        while len(self.current_trick_rotation) > 0:
-            current_player = self.current_trick_rotation[0]
-            if isinstance(current_player, GymPlayer):
-                break
-            obs = self._get_current_observation()
-            current_player.play_trick(self.trick, obs, self.suits_order)
-            self.current_trick_rotation.pop(0)
+        if not self.bidding_done: # play until it's GymPlayer's turn to bid
+            while (not self.bidding_done and not isinstance(self.players[self.current_bidding_player_index], GymPlayer)):
+                player = self.players[self.current_bidding_player_index]
+                valid = self._get_valid_bid_actions(self.current_bid)
+                action = player.bid(self._get_current_observation(), valid, self.suits_order or list(Suit))
+                self._process_bidding(action, player)
+                self.current_bidding_player_index = (self.current_bidding_player_index + 1) % 4
+        else: # play until it's GymPlayer's turn to play or end of trick
+            while len(self.current_trick_rotation) > 0:
+                current_player = self.current_trick_rotation[0]
+                if isinstance(current_player, GymPlayer):
+                    break
+                obs = self._get_current_observation()
+                current_player.play_trick(self.trick, obs, self.suits_order)
+                self.current_trick_rotation.pop(0)
 
     def _get_current_observation(self):
         # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
@@ -376,15 +370,14 @@ class GymCoinche(Env):
             float(self.coinche_surcoinche), # 0/1/2
             phase # 0=bidding, 1=trick
         ])
-
-        return {
-            "bids": bidding_history_observation.astype(np.float32),
-            "played_cards": played_cards_observation.astype(np.float32),
-            "player_cards": player_cards_observation.astype(np.float32),
-            "trick_cards": trick_cards_observation.astype(np.float32),
-            "current_scores": current_scores.astype(np.float32),
-            "extra": extra.astype(np.float32),
-        }
+        return np.concatenate([
+            bidding_history_observation.astype(np.float32),
+            played_cards_observation.astype(np.float32),
+            player_cards_observation.astype(np.float32),
+            trick_cards_observation.astype(np.float32),
+            current_scores.astype(np.float32),
+            extra.astype(np.float32)
+        ], axis=0)
 
     def _get_round_observation(self):
         # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
@@ -411,14 +404,14 @@ class GymCoinche(Env):
             1.0 # always trick phase here
         ], dtype=np.float32)
         
-        return {
-            "bids": bidding_history_observation.astype(np.float32),
-            "played_cards": played_cards_observation.astype(np.float32),
-            "player_cards": player_cards_observation.astype(np.float32),
-            "trick_cards": trick_cards_observation.astype(np.float32),
-            "current_scores": current_scores.astype(np.float32),
-            "extra": extra.astype(np.float32),
-        }
+        return np.concatenate([
+            bidding_history_observation.astype(np.float32),
+            played_cards_observation.astype(np.float32),
+            player_cards_observation.astype(np.float32),
+            trick_cards_observation.astype(np.float32),
+            current_scores.astype(np.float32),
+            extra.astype(np.float32)
+        ], axis=0)
 
     def _get_valid_bid_actions(self, current_bid):
         if current_bid is None:

@@ -14,6 +14,6 @@ def make_env_with_masking(env_id):
 def mask_fn(env):
     # Not used directly yet: stub for when GymPlayer supports invalid action masking
     if hasattr(env, 'get_action_mask'):
-        return env.get_action_mask()
+        return env._legal_action()
     else:
         return [1] * env.action_space.n  # All actions are valid

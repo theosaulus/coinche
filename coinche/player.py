@@ -85,7 +85,7 @@ class RandomPlayer(Player):
         cards = np.where(valid_mask)[0]
         if cards.size == 0:
             raise PlayException("No valid cards to play")
-        cards = sample(cards, len(cards))
+        cards = sample(cards.tolist(), len(cards))
 
         trick.add_card(cards[0], self)
         self.remove_card(cards[0])

@@ -13,6 +13,9 @@ class Trick:
         self.highest_card = None
 
     def _assert_valid_play_TrueFalse(self, card, player):
+        if self.winner == -1: # first card played, no restrictions
+            return 1
+        
         if card is None:
             return 0
 

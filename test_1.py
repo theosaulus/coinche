@@ -22,7 +22,6 @@ if __name__ == "__main__": # This precaution is just for Windows users
     # Factory to create parallel envs
     def make_env():
         def _init():
-            import coinche.gym
             return gym.make("coinche-v3")
         return _init
 
