@@ -26,7 +26,8 @@ class GymPlayer(Player):
             trick.add_card(action_card, self)
             self.remove_card(action_card)
         else:
-            raise PlayException(f"GymPlayer: invalid action {action}, trick is {trick.cards} and action card is {action_card}.")
+            print(f"GymPlayer: invalid action {action} and action card is {action_card}.")
+            trick._assert_valid_play(action_card, self) # will raise an exception explaining the error
 
     def bid(self, bidding_history, valid_bids, suits_order):
         if self.next_action is None:
