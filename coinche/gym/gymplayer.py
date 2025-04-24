@@ -22,18 +22,13 @@ class GymPlayer(Player):
         self.next_action = None
 
         action_card = convert_index_to_cards(action, suits_order)[0]
-        if trick._assert_valid_play_TrueFalse(action_card, self):
-            trick.add_card(action_card, self)
-            self.remove_card(action_card)
-        else:
-            print(f"GymPlayer: invalid action {action} and action card is {action_card}.")
-            trick._assert_valid_play(action_card, self) # will raise an exception explaining the error
+        trick.add_card(action_card, self)
+        self.remove_card(action_card)
 
     def bid(self, bidding_history, valid_bids, suits_order):
         if self.next_action is None:
             raise RuntimeError("GymPlayer bidding: no action set.")
+        
         action = self.next_action
         self.next_action = None
-        if action not in valid_bids:
-            raise ValueError("Invalid action: action is not in valid bids.")
         return action

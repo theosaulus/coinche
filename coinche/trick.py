@@ -13,15 +13,16 @@ class Trick:
         self.highest_card = None
 
     def _assert_valid_play_TrueFalse(self, card, player):
-        if self.winner == -1: # first card played, no restrictions
-            return 1
-        
         if card is None:
             return 0
 
         if not player.has_card(card):
             return 0
-
+        
+        # first card played, no restrictions except to have the card in hand
+        if self.winner == -1: 
+            return 1
+        
         # player tries to play off suit
         if card.suit != self.suit:
             # but has trick suit
@@ -81,6 +82,7 @@ class Trick:
             self.cards.append(card)
             self.cards_in_trick += 1
         else:
+            breakpoint()
             self._assert_valid_play(card, player)
             self.cards.append(card)
             self.cards_in_trick += 1

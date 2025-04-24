@@ -157,19 +157,23 @@ class GymCoinche(Env):
         self._play_until_end_of_rotation_or_ai_play() # Play until AI
 
     def trick_step(self, action):
-        if action < 0 or action >= 32:
-            raise RuntimeError(f"Invalid action {action} for player {self.current_trick_rotation[0].index}")
-
-        ai_player = self.current_trick_rotation[0]
-        if not isinstance(ai_player, GymPlayer):
+        info = {}
+        player = self.current_trick_rotation[0]
+        if not isinstance(player, GymPlayer):
             raise RuntimeError("Not GymPlayer's turn to play")
+        
+        valid_actions = self._get_valid_trick_actions(self.trick)
+        if action < 0 or action >= 32 or action not in valid_actions:
+            print(f"Invalid trick {action} for player {player.index}, "
+                  f"valid actions are {valid_actions}, current trick {self.trick}")
+            self.trick._assert_valid_play(action, player) 
 
         action_vector = np.zeros(32)
         action_vector[action] = 1
-        ai_player.set_next_action(action_vector)
+        player.set_next_action(action_vector)
 
         obs = self._get_current_observation()
-        ai_player.play_trick(self.trick, obs, self.suits_order)
+        player.play_trick(self.trick, obs, self.suits_order)
         self.current_trick_rotation.pop(0)
 
         # Then play until end of trick
@@ -177,7 +181,7 @@ class GymCoinche(Env):
 
         # Handle end of trick
         winner = self.trick.winner
-        trick_score_factor = (ai_player.index % 2 == winner.index % 2) * self.tricks_reward_factor
+        trick_score_factor = (player.index % 2 == winner.index % 2) * self.tricks_reward_factor
         reward = self._get_trick_reward(self.trick, trick_score_factor)
         self.played_tricks.append(self.trick) # add score to teams
 
@@ -422,14 +426,14 @@ class GymCoinche(Env):
         else:
             min_bid_value = current_bid[0] + 10
             min_action_index = 1 + 4 * ((min_bid_value - 80) // 10)
-            valid = list(range(min_action_index, 42)) + [0]  # all possible bids except surcoinche + pass
-            return valid
+            return list(range(min_action_index, 42)) + [0]  # all possible bids except surcoinche + pass
     
     def _get_valid_trick_actions(self, trick):
         valid_actions = []
         for card in self.current_trick_rotation[0].cards:
             if trick._assert_valid_play_TrueFalse(card, self.current_trick_rotation[0]):
                 valid_actions.append(card.to_index(self.suits_order))
+        breakpoint()
         return valid_actions
     
     def _legal_action(self):
