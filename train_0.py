@@ -16,13 +16,14 @@ def load_config(config_path):
 
 def main(config_path):
     config = load_config(config_path)
-    wandb.init(
-        project=config["project_name"],
-        config=config,
-        sync_tensorboard=True,
-        monitor_gym=True,
-        save_code=True
-    )
+    if config["wandb"]:
+        wandb.init(
+            project=config["project_name"],
+            config=config,
+            sync_tensorboard=True,
+            monitor_gym=True,
+            save_code=True
+        )
 
     env_fn = make_env_with_masking(config['env_id'])
     env = DummyVecEnv([env_fn])
@@ -36,7 +37,8 @@ def main(config_path):
     )
 
     model.save(os.path.join("models", f"{algo.lower()}_final"))
-    wandb.finish()
+    if config["wandb"]:
+        wandb.finish()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

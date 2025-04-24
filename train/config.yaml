@@ -1,4 +1,5 @@
 project_name: coincheadversarial
+wandb: False
 algorithm: PPO
 env_id: coinche-v3
 total_timesteps: 10000
