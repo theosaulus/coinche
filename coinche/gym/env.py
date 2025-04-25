@@ -126,7 +126,7 @@ class GymCoinche(Env):
             terminated = True
             return obs, reward, terminated, False, info
 
-        elif self.current_bid is not None and self.passes_in_row >= 3:
+        elif (self.current_bid is not None and self.passes_in_row >= 3) or self.coinche_surcoinche:
             self.bidding_done = True
             self.contract_value, self.atout_suit = self.current_bid
             self.attacker_team = self.bid_winning_player.index % 2
@@ -163,15 +163,12 @@ class GymCoinche(Env):
             raise RuntimeError("Not GymPlayer's turn to play")
         
         valid_actions = self._get_valid_trick_actions(self.trick)
-        if action < 0 or action >= 32 or action not in valid_actions:
+        if (action < 0) or (action >= 32) or (action not in valid_actions):
             print(f"Invalid trick {action} for player {player.index}, "
                   f"valid actions are {valid_actions}, current trick {self.trick}")
             self.trick._assert_valid_play(action, player) 
 
-        action_vector = np.zeros(32)
-        action_vector[action] = 1
-        player.set_next_action(action_vector)
-
+        player.set_next_action(action)
         obs = self._get_current_observation()
         player.play_trick(self.trick, obs, self.suits_order)
         self.current_trick_rotation.pop(0)
@@ -284,7 +281,6 @@ class GymCoinche(Env):
             self.coinche_surcoinche = 2
             self.bid_winning_player = player
             self.passes_in_row = 0
-            self.bidding_done = True
         else:
             bid_value, bid_suit = bid
             self.current_bid = (bid_value, bid_suit)
@@ -433,7 +429,6 @@ class GymCoinche(Env):
         for card in self.current_trick_rotation[0].cards:
             if trick._assert_valid_play_TrueFalse(card, self.current_trick_rotation[0]):
                 valid_actions.append(card.to_index(self.suits_order))
-        breakpoint()
         return valid_actions
     
     def _legal_action(self):

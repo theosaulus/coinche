@@ -82,7 +82,6 @@ class Trick:
             self.cards.append(card)
             self.cards_in_trick += 1
         else:
-            breakpoint()
             self._assert_valid_play(card, player)
             self.cards.append(card)
             self.cards_in_trick += 1
