@@ -12,6 +12,40 @@ class Trick:
         self.winner = -1
         self.highest_card = None
 
+    def _assert_valid_play_TrueFalse(self, card, player):
+        if card is None:
+            return 0
+
+        if not player.has_card(card):
+            return 0
+        
+        # first card played, no restrictions except to have the card in hand
+        if self.winner == -1: 
+            return 1
+        
+        # player tries to play off suit
+        if card.suit != self.suit:
+            # but has trick suit
+            if player.has_suit(self.suit):
+                return 0
+            # he is not playing atout and the partner is not winning
+            elif card.suit != self.atout_suit \
+                    and player.has_suit(self.atout_suit) \
+                    and (player.index - self.winner.index) % 2 == 1:
+                return 0
+            elif card.suit == self.atout_suit:
+                # Player can play a higher atout but doesn't do so --> forced to play a higher atout
+                if (self.highest_is_atout() and _ATOUT_RANK[card.rank] < _ATOUT_RANK[self.highest_card.rank]
+                        and self.player_can_go_higher(player)):
+                    return 0
+
+        # If suit is atout, you must go higher if you can
+        if self.suit == self.atout_suit and card.suit == self.atout_suit:
+            if _ATOUT_RANK[card.rank] < _ATOUT_RANK[self.highest_card.rank] and self.player_can_go_higher(player):
+                return 0
+        
+        return 1
+
     def _assert_valid_play(self, card, player):
         if card is None:
             raise MustPlayACard()
