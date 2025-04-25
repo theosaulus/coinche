@@ -18,10 +18,10 @@ class GymPlayer(Player):
         if self.next_action is None:
             raise RuntimeError("No action set for GymPlayer.play_trick")
         
-        action = self.next_action
+        action_idx = self.next_action
         self.next_action = None
 
-        action_card = convert_index_to_cards(action, suits_order)[0]
+        action_card = convert_index_to_cards([action_idx], suits_order)[0]
         trick.add_card(action_card, self)
         self.remove_card(action_card)
 

@@ -12,10 +12,17 @@ def make_env_with_masking(env_id):
 
 
 def mask_fn(env):
-    env = getattr(env, "env", env) # Unwrap the Monitor if necessary
-    env = getattr(env, "env", env) # Unwrap the ActionMasker if necessary
-    if hasattr(env, 'get_action_mask'):
-        return env.get_action_mask()
+    # env = getattr(env, "env", env) # Unwrap the Monitor if necessary
+    # env = getattr(env, "env", env) # Unwrap the ActionMasker if necessary
+    # if hasattr(env, 'get_action_mask'):
+    #     return env.get_action_mask()
+    # unwrap all wrappers to get to the base environment, and thus the action mask
+    real = env
+    while hasattr(real, "env"):
+        real = real.env
+    
+    if hasattr(real, 'get_action_mask'):
+        return real.get_action_mask()
     else:
         print("Warning: No action mask function found. Returning all actions as valid.")
         return [1] * env.action_space.n  # All actions are valid
