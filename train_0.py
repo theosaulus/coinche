@@ -33,8 +33,11 @@ def main(config_path):
     callbacks = build_callbacks(config)
     model.learn(
         total_timesteps=config["total_timesteps"],
-        callback=callbacks
+        callback=callbacks,
+        use_masking=True
     )
+    # at inference time, do not forget : action, _ = model.predict(obs, action_masks=env.get_action_mask())
+
 
     model.save(os.path.join("models", f"{algo.lower()}_final"))
     if config["wandb"]:
