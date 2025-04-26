@@ -11,6 +11,8 @@ from coinche.utils import convert_cards_to_vector, decode_bid_action
 
 from gymnasium import Env, spaces
 
+import copy
+
 PAD_ACTION = 43
 
 def make_env(env_id="coinche-v3", seed=None):
@@ -332,6 +334,16 @@ class GymCoinche(Env):
                 current_player.play_trick(self.trick, obs, self.suits_order)
                 self.current_trick_rotation.pop(0)
 
+    def _get_current_player(self):
+        # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
+        if not self.bidding_done or (self.bidding_done and not self.current_trick_rotation):
+            current_player = self.players[self.current_bidding_player_index]
+            
+        else:
+            current_player = self.current_trick_rotation[0]
+            
+        return current_player
+    
     def _get_current_observation(self):
         # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
         if not self.bidding_done or (self.bidding_done and not self.current_trick_rotation):
@@ -436,7 +448,7 @@ class GymCoinche(Env):
             return self._get_valid_bid_actions(self.current_bid)
         else:
             return self._get_valid_trick_actions(self.trick)
-        
+             
     def get_action_mask(self):
         # For stable-baslines3
         legal_actions = self._legal_action()
@@ -453,3 +465,50 @@ class GymCoinche(Env):
     def _get_trick_reward(self, trick, trick_score_factor):
         score = trick.score() + 10 * (len(self.played_tricks) == 7) # add 10 to last trick
         return score * trick_score_factor
+    
+    def _get_return(self):
+        if not self.bidding_done:
+            return 0.0
+        elif len(self.played_tricks) < 8:
+            return 0.0
+        else:
+            reward = np.array([0.0, 0.0, 0.0, 0.0])
+            for trick in self.played_tricks:
+                trick_score_factor = 1.0 if (trick.winner.index % 2 == self.attacker_team) else -1.0
+                score = trick.score() + 10 * (len(self.played_tricks) == 7)
+                reward[trick.winner.index] += score * trick_score_factor
+                reward[(trick.winner.index + 2)%4] += score * trick_score_factor
+            return reward
+    
+    def copy(self):
+        new_env = GymCoinche(players=[p for p in self.players])  # Shallow copy players
+
+        # Copy important attributes
+        new_env.tricks_reward_factor = self.tricks_reward_factor
+
+        # Deep copy necessary mutable objects
+        new_env.deck = copy.deepcopy(self.deck)
+        new_env.round_number = self.round_number
+        new_env.reshuffle_deck_each_round = self.reshuffle_deck_each_round
+
+        new_env.dealer_index = self.dealer_index
+        new_env.current_bidding_player_index = self.current_bidding_player_index
+        new_env.bids = copy.deepcopy(self.bids)
+        new_env.current_bid = copy.deepcopy(self.current_bid)
+        new_env.bid_winning_player = self.bid_winning_player
+        new_env.passes_in_row = self.passes_in_row
+
+        new_env.atout_suit = self.atout_suit
+        new_env.contract_value = self.contract_value
+        new_env.coinche_surcoinche = self.coinche_surcoinche
+        new_env.bidding_done = self.bidding_done
+
+        new_env.attacker_team = self.attacker_team
+        new_env.current_trick_rotation = copy.deepcopy(self.current_trick_rotation)
+        new_env.played_tricks = copy.deepcopy(self.played_tricks)
+        new_env.trick = copy.deepcopy(self.trick)
+        new_env.suits_order = copy.deepcopy(self.suits_order)
+        new_env.original_hands = copy.deepcopy(self.original_hands)
+        new_env.total_score = self.total_score
+
+        return new_env
