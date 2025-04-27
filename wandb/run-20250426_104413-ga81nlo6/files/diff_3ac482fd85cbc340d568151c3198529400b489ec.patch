@@ -1,0 +1,41 @@
+diff --git a/requirements.txt b/requirements.txt
+index 690e087..3813ad3 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,6 +1,13 @@
+-numpy==2.2.4
++#numpy==2.2.4
+ gymnasium==1.1.1
+ torch==2.6.0
+ wandb==0.19.9
+ stable-baselines3[extra]==2.6.0
+-sb3-contrib==2.6.0
+\ No newline at end of file
++sb3-contrib==2.6.0
++
++tensorflow
++numpy<2.0
++open-spiel>=1.2
++gym==0.26.0 
++
++scikit-learn
+\ No newline at end of file
+diff --git a/train/config.yaml b/train/config.yaml
+index f90b437..4459ea3 100644
+--- a/train/config.yaml
++++ b/train/config.yaml
+@@ -2,11 +2,11 @@ project_name: coincheadversarial
+ wandb: True
+ algorithm: PPO
+ env_id: coinche-v3
+-total_timesteps: 10000
++total_timesteps: 100 #00
+ 
+ log_every: 1                 # Log every episode
+-checkpoint_every: 10000       # Save model every N steps
+-eval_every: 10000             # (Optional) evaluate agent every N steps
++checkpoint_every: 100 #00       # Save model every N steps
++eval_every: 100 #00             # (Optional) evaluate agent every N steps
+ gradient_save_freq: 0         # (Optional) save gradient every N steps (0 is never)
+ 
+ log_game_metrics: true       # Log contract, suit, etc.

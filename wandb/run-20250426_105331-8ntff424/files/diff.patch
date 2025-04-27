@@ -1,0 +1,88 @@
+diff --git a/requirements.txt b/requirements.txt
+index 690e087..3813ad3 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,6 +1,13 @@
+-numpy==2.2.4
++#numpy==2.2.4
+ gymnasium==1.1.1
+ torch==2.6.0
+ wandb==0.19.9
+ stable-baselines3[extra]==2.6.0
+-sb3-contrib==2.6.0
+\ No newline at end of file
++sb3-contrib==2.6.0
++
++tensorflow
++numpy<2.0
++open-spiel>=1.2
++gym==0.26.0 
++
++scikit-learn
+\ No newline at end of file
+diff --git a/train/algorithm_choice.py b/train/algorithm_choice.py
+index 69a1a6f..d4e5c04 100644
+--- a/train/algorithm_choice.py
++++ b/train/algorithm_choice.py
+@@ -1,4 +1,19 @@
++import numpy as np
++import tensorflow.compat.v1 as tf
++tf.disable_v2_behavior()
++
+ from sb3_contrib.ppo_mask import MaskablePPO
++from sb3_contrib import QRDQN
++
++from train.wrapper import OnlineCFRWrapper
++#from coinche.gym.env import GymCoinche
++
++#import pyspiel
++#from open_spiel.python.algorithms import cfr, deep_cfr, nfsp
++#from open_spiel.python import rl_environment
++
++
++
+ 
+ def get_algorithm(config, env):
+     algo = config["algorithm"].upper()
+@@ -9,5 +24,19 @@ def get_algorithm(config, env):
+             verbose=1,
+             tensorboard_log="logs/ppo/",
+         )
++    
++    elif algo == "CFR": #DO Deep CFR
++        #game = pyspiel.load_game("coinche")
++        return OnlineCFRWrapper(config, env)
++    
++    elif algo == "QRDQN":
++        #need to fix if we want to implement -- model.learn( --> TypeError: QRDQN.learn() got an unexpected keyword argument 'use_masking'
++        policy_kwargs = dict(n_quantiles=50)
++        return QRDQN("MlpPolicy", 
++                     env, 
++                     policy_kwargs=policy_kwargs, 
++                     verbose=1,
++                     tensorboard_log="logs/ppo/")
++    
+     else:
+         raise NotImplementedError(f"Algorithm '{algo}' is not supported yet.")
+\ No newline at end of file
+diff --git a/train/config.yaml b/train/config.yaml
+index f90b437..d1c916e 100644
+--- a/train/config.yaml
++++ b/train/config.yaml
+@@ -1,12 +1,12 @@
+ project_name: coincheadversarial
+ wandb: True
+-algorithm: PPO
++algorithm: CFR #PPO
+ env_id: coinche-v3
+-total_timesteps: 10000
++total_timesteps: 100 #00
+ 
+ log_every: 1                 # Log every episode
+-checkpoint_every: 10000       # Save model every N steps
+-eval_every: 10000             # (Optional) evaluate agent every N steps
++checkpoint_every: 100 #00       # Save model every N steps
++eval_every: 100 #00             # (Optional) evaluate agent every N steps
+ gradient_save_freq: 0         # (Optional) save gradient every N steps (0 is never)
+ 
+ log_game_metrics: true       # Log contract, suit, etc.

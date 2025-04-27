@@ -95,6 +95,7 @@ class DeterministicPlayer(RandomPlayer):
         has_nine = {}
         has_ace = {}
         bid_action = 0
+        is_opening = False
 
         for card in cards:
             suit_counts[card.suit] += 1
@@ -110,6 +111,7 @@ class DeterministicPlayer(RandomPlayer):
             0 if obs[34] == 43 else obs[34],
             0 if obs[36] == 43 else obs[36]
         )) # ignore the padding bid, and take the largest opponent bid
+
 
         if (last_partner_bid in [0, 43]) and (
             last_max_opponent_bid in [0, 1, 2, 3, 4, 43] # either pass, pad, or 80
@@ -137,6 +139,7 @@ class DeterministicPlayer(RandomPlayer):
                 value_add += 20
             for s in suits_order:
                 if s != suit and has_ace.get(s, False):
+
                     value_add += 10
 
             new_value = value + value_add

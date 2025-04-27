@@ -20,6 +20,8 @@ class Card:
         return not (self > other)
 
     def __eq__(self, other):
+        #print(self)
+        #print(other)
         return self.rank == other.rank and self.suit == other.suit
 
     def __ne__(self, other):
@@ -73,3 +75,8 @@ class Rank(Enum):
     QUEEN = 5
     KING = 6
     ACE = 7
+
+    def __lt__(self, other):
+        if isinstance(other, Rank):
+            return self.value < other.value
+        return NotImplemented
