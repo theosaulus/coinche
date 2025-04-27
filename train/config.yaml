@@ -10,12 +10,13 @@ log_every: 5                 # Log every episode
 checkpoint_every: 1000 #10_000       # Save model every N steps
 eval_every: 1000 #10_000             # (Optional) evaluate agent every N steps
 
+
 gradient_save_freq: 0         # (Optional) save gradient every N steps (0 is never)
 
-log_game_metrics: true       # Log contract, suit, etc.
-save_game_replays: true      # Save replays for analysis
+log_game_metrics: true      # Log contract, suit, etc.
+save_game_replays: true     # Save replays for analysis
 
 num_envs: 8
 n_steps: 512
-batch_size: 256
+batch_size: 512
 n_epochs: 10

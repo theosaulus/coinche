@@ -1,6 +1,8 @@
 .idea
 logs/
 models/
+models_gradients/
+models_checkpoints/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

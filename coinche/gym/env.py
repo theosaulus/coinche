@@ -334,7 +334,9 @@ class GymCoinche(Env):
         :return:
         """
         if not self.bidding_done: # play until it's GymPlayer's turn to bid
-            while (not self.bidding_done and not isinstance(self.players[self.current_bidding_player_index], GymPlayer)):
+            while (not self.bidding_done) and (
+                not isinstance(self.players[self.current_bidding_player_index], GymPlayer)
+            ) and (self.passes_in_row < 4):
                 player = self.players[self.current_bidding_player_index]
                 valid = self._get_valid_bid_actions(self.current_bid)
                 action = player.bid(self._get_current_observation(), valid, self.suits_order or list(Suit))
@@ -449,6 +451,8 @@ class GymCoinche(Env):
             return [42, 0] # surcoinche + pass
         elif self.coinche_surcoinche == 2:
             return [0]
+        elif current_bid[0] == 250:
+            return [41, 0]  # pass + coinche
         else:
             min_bid_value = current_bid[0] + 10
             min_action_index = 1 + 4 * ((min_bid_value - 80) // 10)
@@ -481,7 +485,7 @@ class GymCoinche(Env):
         return rotation.tolist()
 
     def _get_trick_reward(self, trick, trick_score_factor):
-        score = trick.score() + 10 * (len(self.played_tricks) == 7) # add 10 to last trick
+        score = trick.score()
         return score * trick_score_factor
     
     def _get_return(self):

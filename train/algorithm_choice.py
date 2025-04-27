@@ -5,6 +5,9 @@ tf.disable_v2_behavior()
 from sb3_contrib.ppo_mask import MaskablePPO
 import torch
 
+# import torch._dynamo
+# torch._dynamo.config.suppress_errors = True
+
 from sb3_contrib import QRDQN
 
 from train.wrapper import DeepCFRWrapper, OnlineCFRWrapper
@@ -19,7 +22,7 @@ def get_algorithm(config, env):
 
     algo = config["algorithm"].upper()
     if algo == "PPO":
-        return MaskablePPO(
+        ppo = MaskablePPO(
             policy=config.get("policy"),
             env=env,
             learning_rate=config.get("learning_rate", 3e-4),
@@ -40,6 +43,13 @@ def get_algorithm(config, env):
             seed=config.get("seed", None),
             device=device,
         )
+        # if hasattr(torch, "compile"):
+        #     ppo.policy = torch.compile(
+        #         ppo.policy,
+        #         fullgraph=False,        # try to fuse as much as possible
+        #         dynamic=True           # keep control‐flow dynamic if needed
+        #     )
+        return ppo
     elif algo == "DCFR": 
         return DeepCFRWrapper(config, env)
 

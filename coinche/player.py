@@ -81,9 +81,7 @@ class RandomPlayer(Player):
             if trick._assert_valid_play_TrueFalse(card, self)
         ]
         if not legal_cards:
-            #print(legal_cards)
-            breakpoint()
-            raise PlayException("No valid cards to play")
+            raise PlayException("No valid cards to play - RandomPlayer")
 
         card = random.choice(legal_cards)
         trick.add_card(card, self)
@@ -108,55 +106,45 @@ class DeterministicPlayer(RandomPlayer):
             if card.rank.name == "ACE":
                 has_ace[card.suit] = True
 
-        # Detect if opening or answering
-        partner_index = (self.index + 2) % 4
+        last_partner_bid = int(obs[35])
+        last_max_opponent_bid = int(max(
+            0 if obs[34] == 43 else obs[34],
+            0 if obs[36] == 43 else obs[36]
+        )) # ignore the padding bid, and take the largest opponent bid
 
-        obs_bidding = [bid for bid in obs[:37] if bid != 43]
-        #print(obs_bidding)
-        partner_bids = [
-            decode_bid_action(int(bid))
-            for i, bid in enumerate(obs_bidding)
-            if i % 4 == partner_index and bid != 0 and bid < 41
-        ]
-        '''partner_bids = [
-            decode_bid_action(int(bid))
-            for i, bid in enumerate(b for b in obs[:37] if b != 43)
-            if i % 4 == partner_index and bid != 0
-        ]'''
-        #partner_bids = [decode_bid_action(bid) for i, bid in enumerate(obs["bids"]) if i % 4 == partner_index]
-        if not partner_bids:
-            is_opening = True
 
-        if is_opening:
+        if (last_partner_bid in [0, 43]) and (
+            last_max_opponent_bid in [0, 1, 2, 3, 4, 43] # either pass, pad, or 80
+        ):
+            opponents_bidded_80 = last_max_opponent_bid in [1, 2, 3, 4]
             for suit in suits_order:
                 j = has_jack.get(suit, False)
                 n = has_nine.get(suit, False)
                 count = suit_counts[suit]
                 ace_else = any(s != suit and has_ace.get(s, False) for s in suits_order)
                 if j and n and (count >= 1 or ace_else):
-                    bid_action = encode_bid_action(90, suit)
+                    bid_action = encode_bid_action(90 + opponents_bidded_80 * 10, suit)
                 elif (j or n) and (count >= 2 or (count >= 1 and ace_else)):
-                    bid_action = encode_bid_action(80, suit)
+                    bid_action = encode_bid_action(80 + opponents_bidded_80 * 10, suit)
 
-        else:
-            #print(f"partner_bids: {partner_bids}")
-            if partner_bids and partner_bids[-1] != "coinche" or partner_bids[-1] != "surcoinche": 
-                partner_bid = partner_bids[-1]
-                #print(f"partner_bid: {partner_bid}")
-                value, suit = partner_bid
-                value_add = 0
-                if has_nine.get(suit, False):
+        elif (last_partner_bid in range(1,9)): # either 80 or 90
+            opp_bid = decode_bid_action(last_max_opponent_bid)
+            opp_value = opp_bid[0] if isinstance(opp_bid, tuple) else 0 # exclude pass, coinche, surcoinche
+            value, suit = decode_bid_action(last_partner_bid)
+            
+            value_add = 0
+            if has_nine.get(suit, False):
+                value_add += 10
+            if has_jack.get(suit, False):
+                value_add += 20
+            for s in suits_order:
+                if s != suit and has_ace.get(s, False):
+
                     value_add += 10
-                if has_jack.get(suit, False):
-                    value_add += 20
-                for s in suits_order:
-                    if s != suit and has_ace.get(s, False):
-                        value_add += 10
 
-                new_value = value + value_add
-                if new_value > value:
-                    bid_action = encode_bid_action(new_value, suit)
-        
+            new_value = value + value_add
+            if new_value > opp_value and new_value > value:
+                bid_action = encode_bid_action(new_value, suit)
         return bid_action if bid_action in valid_bids else 0
     
     def play_trick(self, trick, obs, suits_order):
@@ -165,10 +153,13 @@ class DeterministicPlayer(RandomPlayer):
             if trick._assert_valid_play_TrueFalse(card, self)
         ]
         if not legal_cards:
-            raise PlayException("No valid cards to play")
+            raise PlayException("No valid cards to play - DeterministicPlayer")
 
-        # sort them however you like, then pick the first
-        legal_cards.sort(key=lambda c: (c.suit != trick.atout_suit, c.rank), reverse=True)
+        # sort by: first preferring cards in trump suit, then by rank
+        legal_cards.sort(
+            key=lambda c: (c.suit != trick.atout_suit, c.rank.value),
+            reverse=True
+        )
         card = legal_cards[0]
 
         trick.add_card(card, self)
