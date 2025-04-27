@@ -1,12 +1,10 @@
 from coinche.gym.env import make_env
 from sb3_contrib.common.wrappers import ActionMasker
-from stable_baselines3.common.monitor import Monitor
 
 def make_env_with_masking(env_id):
     def _wrapped():
         env = make_env(env_id=env_id)()
         env = ActionMasker(env, mask_fn)
-        env = Monitor(env)
         return env
     return _wrapped
 

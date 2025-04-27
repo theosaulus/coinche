@@ -4,6 +4,7 @@ import wandb
 import argparse
 
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env import VecMonitor
 
 from train.callbacks import build_callbacks
 from train.utils import make_env_with_masking
@@ -29,6 +30,7 @@ def main(config_path):
     # env = DummyVecEnv([env_fn])
     env_fns = [make_env_with_masking(config['env_id']) for _ in range(config['num_envs'])]
     env = SubprocVecEnv(env_fns)
+    env = VecMonitor(env)
 
     algo = config["algorithm"].upper()
     model = get_algorithm(config, env)

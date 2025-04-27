@@ -1,12 +1,16 @@
 from sb3_contrib.ppo_mask import MaskablePPO
 import torch
 
+# import torch._dynamo
+# torch._dynamo.config.suppress_errors = True
+
+
 def get_algorithm(config, env):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     algo = config["algorithm"].upper()
     if algo == "PPO":
-        return MaskablePPO(
+        ppo = MaskablePPO(
             policy=config.get("policy"),
             env=env,
             learning_rate=config.get("learning_rate", 3e-4),
@@ -27,5 +31,12 @@ def get_algorithm(config, env):
             seed=config.get("seed", None),
             device=device,
         )
+        # if hasattr(torch, "compile"):
+        #     ppo.policy = torch.compile(
+        #         ppo.policy,
+        #         fullgraph=False,        # try to fuse as much as possible
+        #         dynamic=True           # keep control‐flow dynamic if needed
+        #     )
+        return ppo
     else:
         raise NotImplementedError(f"Algorithm '{algo}' is not supported yet.")
