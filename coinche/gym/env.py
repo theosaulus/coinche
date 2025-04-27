@@ -47,10 +47,10 @@ class GymCoinche(Env):
             RandomPlayer(3, "W")
         ]'''
         self.players = players if players is not None else [
-            DeterministicPlayer(0, "N"),
-            DeterministicPlayer(1, "E"),
+            GymPlayer(0, "N"),
+            GymPlayer(1, "E"),
             GymPlayer(2, "S"),
-            DeterministicPlayer(3, "W")
+            GymPlayer(3, "W")
         ]
         
         self.tricks_reward_factor = 0.1
@@ -104,10 +104,10 @@ class GymCoinche(Env):
         :return: obs, reward, done, info
         """
         if not self.bidding_done:
-            print("bidding")
+            #print("bidding")
             return self.bidding_step(action)
         else:
-            print("trick")
+            #print("trick")
             return self.trick_step(action)
 
     def bidding_step(self, action):
@@ -367,22 +367,27 @@ class GymCoinche(Env):
     def _get_current_observation(self):
         # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
         if not self.bidding_done or (self.bidding_done and not self.current_trick_rotation):
+            #print("Bidding phase")
             played_cards = []
-            current_player = self.players[self.current_bidding_player_index]
+            current_player = self.players[self.current_bidding_player_index] #if player == None else player
             suits_order = list(Suit)
             current_player_attacker = 2 # 2 = bidding phase
             trick_cards_observation = np.zeros(32) # no cards played yet
         
         else:
+            #print("Trick phase")
             played_cards = [card for trick in self.played_tricks for card in trick.cards]
-            current_player = self.current_trick_rotation[0]
+            current_player = self.current_trick_rotation[0] #if player == None else player
             suits_order = self.suits_order
             current_player_attacker = current_player.attacker
             trick_cards_observation = convert_cards_to_vector(self.trick.cards, suits_order)
 
+        #print("Current player: ", current_player)
+        #print("current_player_attacker: ", current_player_attacker)
+
+        #print("current_player_attacker: ", current_player.attacker)
         bids = [PAD_ACTION] * (self.bidding_history_length - len(self.bids)) + self.bids
         bidding_history_observation = np.array(bids)
-
         played_cards_observation = convert_cards_to_vector(played_cards, suits_order)
         player_cards_observation = convert_cards_to_vector(current_player.cards, suits_order)
         current_scores = np.array([
@@ -448,15 +453,15 @@ class GymCoinche(Env):
         if current_bid is None:
             return list(range(1, 41)) + [0]  # all bids except coinche/surcoinche + pass
         elif self.coinche_surcoinche == 1:
-            return [42, 0] # surcoinche + pass
+            return [0, 42] # surcoinche + pass
         elif self.coinche_surcoinche == 2:
             return [0]
         elif current_bid[0] == 250:
-            return [41, 0]  # pass + coinche
+            return [0, 41]  # pass + coinche
         else:
             min_bid_value = current_bid[0] + 10
             min_action_index = 1 + 4 * ((min_bid_value - 80) // 10)
-            return list(range(min_action_index, 42)) + [0]  # all possible bids except surcoinche + pass
+            return [0]  + list(range(min_action_index, 42))  # all possible bids except surcoinche + pass
     
     def _get_valid_trick_actions(self, trick):
         valid_actions = []
@@ -552,39 +557,3 @@ class GymCoinche(Env):
         Return a deep copy of this environment.
         """
         return copy.deepcopy(self)
-
-
-
-    def old_copy(self):
-        new_env = GymCoinche(players=[p for p in self.players])  # Shallow copy players
-
-
-        # Copy important attributes
-        new_env.tricks_reward_factor = copy.deepcopy(self.tricks_reward_factor)
-
-        # Deep copy necessary mutable objects
-        new_env.deck = copy.deepcopy(self.deck)
-        new_env.round_number = copy.deepcopy(self.round_number)
-        new_env.reshuffle_deck_each_round = copy.deepcopy(self.reshuffle_deck_each_round)
-
-        new_env.dealer_index = copy.deepcopy(self.dealer_index)
-        new_env.current_bidding_player_index = copy.deepcopy(self.current_bidding_player_index)
-        new_env.bids = copy.deepcopy(self.bids)
-        new_env.current_bid = copy.deepcopy(self.current_bid)
-        new_env.bid_winning_player = copy.deepcopy(self.bid_winning_player)
-        new_env.passes_in_row = copy.deepcopy(self.passes_in_row)
-
-        new_env.atout_suit = copy.deepcopy(self.atout_suit)
-        new_env.contract_value = copy.deepcopy(self.contract_value)
-        new_env.coinche_surcoinche = copy.deepcopy(self.coinche_surcoinche)
-        new_env.bidding_done = copy.deepcopy(self.bidding_done)
-
-        new_env.attacker_team = copy.deepcopy(self.attacker_team)
-        new_env.current_trick_rotation = copy.deepcopy(self.current_trick_rotation)
-        new_env.played_tricks = copy.deepcopy(self.played_tricks)
-        new_env.trick = copy.deepcopy(self.trick)
-        new_env.suits_order = copy.deepcopy(self.suits_order)
-        new_env.original_hands = copy.deepcopy(self.original_hands)
-        new_env.total_score = copy.deepcopy(self.total_score)
-
-        return new_env
