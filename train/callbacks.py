@@ -45,7 +45,7 @@ def build_callbacks(config):
             )
         )
 
-    if config.get("gradient_save_freq", 0) > 0:
+    if config.get(wandb, False) and config.get("gradient_save_freq", 0) > 0:
         callbacks.append(WandbCallback(
             gradient_save_freq=config["gradient_save_freq"],
             model_save_freq=config["checkpoint_every"],
