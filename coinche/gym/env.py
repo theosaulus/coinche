@@ -173,6 +173,9 @@ class GymCoinche(Env):
 
         player.set_next_action(action)
         obs = self._get_current_observation()
+        print("PLAYER: ", player.index)
+        print("OBS: ", obs)
+        print("VALID ACTIONS: ", valid_actions)
         player.play_trick(self.trick, obs, self.suits_order)
         self.current_trick_rotation.pop(0)
 
@@ -335,6 +338,9 @@ class GymCoinche(Env):
                 if isinstance(current_player, GymPlayer):
                     break
                 obs = self._get_current_observation()
+                print(obs)
+                print(current_player.index)
+                print(self.trick.cards_in_trick)
                 current_player.play_trick(self.trick, obs, self.suits_order)
                 self.current_trick_rotation.pop(0)
 
@@ -488,31 +494,31 @@ class GymCoinche(Env):
         new_env = GymCoinche(players=[p for p in self.players])  # Shallow copy players
 
         # Copy important attributes
-        new_env.tricks_reward_factor = self.tricks_reward_factor
+        new_env.tricks_reward_factor = copy.deepcopy(self.tricks_reward_factor)
 
         # Deep copy necessary mutable objects
         new_env.deck = copy.deepcopy(self.deck)
-        new_env.round_number = self.round_number
-        new_env.reshuffle_deck_each_round = self.reshuffle_deck_each_round
+        new_env.round_number = copy.deepcopy(self.round_number)
+        new_env.reshuffle_deck_each_round = copy.deepcopy(self.reshuffle_deck_each_round)
 
-        new_env.dealer_index = self.dealer_index
-        new_env.current_bidding_player_index = self.current_bidding_player_index
+        new_env.dealer_index = copy.deepcopy(self.dealer_index)
+        new_env.current_bidding_player_index = copy.deepcopy(self.current_bidding_player_index)
         new_env.bids = copy.deepcopy(self.bids)
         new_env.current_bid = copy.deepcopy(self.current_bid)
-        new_env.bid_winning_player = self.bid_winning_player
-        new_env.passes_in_row = self.passes_in_row
+        new_env.bid_winning_player = copy.deepcopy(self.bid_winning_player)
+        new_env.passes_in_row = copy.deepcopy(self.passes_in_row)
 
-        new_env.atout_suit = self.atout_suit
-        new_env.contract_value = self.contract_value
-        new_env.coinche_surcoinche = self.coinche_surcoinche
-        new_env.bidding_done = self.bidding_done
+        new_env.atout_suit = copy.deepcopy(self.atout_suit)
+        new_env.contract_value = copy.deepcopy(self.contract_value)
+        new_env.coinche_surcoinche = copy.deepcopy(self.coinche_surcoinche)
+        new_env.bidding_done = copy.deepcopy(self.bidding_done)
 
-        new_env.attacker_team = self.attacker_team
+        new_env.attacker_team = copy.deepcopy(self.attacker_team)
         new_env.current_trick_rotation = copy.deepcopy(self.current_trick_rotation)
         new_env.played_tricks = copy.deepcopy(self.played_tricks)
         new_env.trick = copy.deepcopy(self.trick)
         new_env.suits_order = copy.deepcopy(self.suits_order)
         new_env.original_hands = copy.deepcopy(self.original_hands)
-        new_env.total_score = self.total_score
+        new_env.total_score = copy.deepcopy(self.total_score)
 
         return new_env

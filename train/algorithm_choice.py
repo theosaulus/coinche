@@ -7,7 +7,7 @@ import torch
 
 from sb3_contrib import QRDQN
 
-from train.wrapper import CFRWrapper, DeepCFRWrapper, OnlineCFRWrapper
+from train.wrapper import DeepCFRWrapper, OnlineCFRWrapper
 #from coinche.gym.env import GymCoinche
 
 #import pyspiel

@@ -1,0 +1,44 @@
+{
+  "os":  "macOS-14.2-arm64-arm-64bit",
+  "python":  "CPython 3.10.9",
+  "startedAt":  "2025-04-27T00:43:12.295946Z",
+  "program":  "/Users/sophiagunluk/Desktop/GitHub/coinche/train.py",
+  "codePath":  "train.py",
+  "git":  {
+    "remote":  "https://github.com/theosaulus/coinche.git",
+    "commit":  "e55648555edc0c9c89bc99129948bdd93eff12e0"
+  },
+  "email":  "sophia.gunluk@mila.quebec",
+  "root":  "/Users/sophiagunluk/Desktop/GitHub/coinche",
+  "host":  "Sophias-Air-2.ht.home",
+  "executable":  "/Users/sophiagunluk/Desktop/GitHub/coinche/venv/bin/python",
+  "codePathLocal":  "train.py",
+  "cpu_count":  8,
+  "cpu_count_logical":  8,
+  "disk":  {
+    "/":  {
+      "total":  "494384795648",
+      "used":  "479031336960"
+    },
+    "/System/Volumes/Data":  {
+      "total":  "494384795648",
+      "used":  "479031336960"
+    }
+  },
+  "memory":  {
+    "total":  "8589934592"
+  },
+  "cpu":  {
+    "count":  8,
+    "countLogical":  8
+  },
+  "apple":  {
+    "name":  "Apple M2",
+    "ecpuCores":  4,
+    "pcpuCores":  4,
+    "gpuCores":  10,
+    "memoryGb":  8,
+    "swapTotalBytes":  "8589934592",
+    "ramTotalBytes":  "8589934592"
+  }
+}
