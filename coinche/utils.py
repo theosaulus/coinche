@@ -34,6 +34,7 @@ def decode_bid_action(action):
     elif action in range(1, 37):
         bid_value = 80 + ((action - 1) // 4) * 10
         trump_index = (action - 1) % 4
+        #print(f"trump_index: {trump_index}")
         atout_suit = list(Suit)[trump_index]
         return (bid_value, atout_suit)
     elif action in range(37, 41):

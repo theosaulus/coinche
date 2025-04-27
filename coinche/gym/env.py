@@ -2,7 +2,7 @@ import numpy as np
 import random
 import gymnasium as gym
 
-from coinche.player import RandomPlayer, AIPlayer
+from coinche.player import RandomPlayer, AIPlayer, DeterministicPlayer
 from coinche.gym.gymplayer import GymPlayer
 from coinche.trick import Trick
 from coinche.deck import Deck
@@ -40,11 +40,17 @@ class GymCoinche(Env):
         # unified action space for both phases
         self.action_space = spaces.Discrete(44)
 
-        self.players = players if players is not None else [
+        '''self.players = players if players is not None else [
             RandomPlayer(0, "N"),
             RandomPlayer(1, "E"),
             GymPlayer(2, "S"),
             RandomPlayer(3, "W")
+        ]'''
+        self.players = players if players is not None else [
+            DeterministicPlayer(0, "N"),
+            DeterministicPlayer(1, "E"),
+            GymPlayer(2, "S"),
+            DeterministicPlayer(3, "W")
         ]
         
         self.tricks_reward_factor = 0.1
@@ -98,8 +104,10 @@ class GymCoinche(Env):
         :return: obs, reward, done, info
         """
         if not self.bidding_done:
+            print("bidding")
             return self.bidding_step(action)
         else:
+            print("trick")
             return self.trick_step(action)
 
     def bidding_step(self, action):

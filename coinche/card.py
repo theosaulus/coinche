@@ -75,3 +75,8 @@ class Rank(Enum):
     QUEEN = 5
     KING = 6
     ACE = 7
+
+    def __lt__(self, other):
+        if isinstance(other, Rank):
+            return self.value < other.value
+        return NotImplemented

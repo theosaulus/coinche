@@ -97,6 +97,7 @@ class DeterministicPlayer(RandomPlayer):
         has_nine = {}
         has_ace = {}
         bid_action = 0
+        is_opening = False
 
         for card in cards:
             suit_counts[card.suit] += 1
@@ -109,7 +110,20 @@ class DeterministicPlayer(RandomPlayer):
 
         # Detect if opening or answering
         partner_index = (self.index + 2) % 4
-        partner_bids = [decode_bid_action(bid) for i, bid in enumerate(obs["bids"]) if i % 4 == partner_index]
+
+        obs_bidding = [bid for bid in obs[:37] if bid != 43]
+        #print(obs_bidding)
+        partner_bids = [
+            decode_bid_action(int(bid))
+            for i, bid in enumerate(obs_bidding)
+            if i % 4 == partner_index and bid != 0 and bid < 41
+        ]
+        '''partner_bids = [
+            decode_bid_action(int(bid))
+            for i, bid in enumerate(b for b in obs[:37] if b != 43)
+            if i % 4 == partner_index and bid != 0
+        ]'''
+        #partner_bids = [decode_bid_action(bid) for i, bid in enumerate(obs["bids"]) if i % 4 == partner_index]
         if not partner_bids:
             is_opening = True
 
@@ -125,8 +139,10 @@ class DeterministicPlayer(RandomPlayer):
                     bid_action = encode_bid_action(80, suit)
 
         else:
-            if partner_bids:
+            #print(f"partner_bids: {partner_bids}")
+            if partner_bids and partner_bids[-1] != "coinche" or partner_bids[-1] != "surcoinche": 
                 partner_bid = partner_bids[-1]
+                #print(f"partner_bid: {partner_bid}")
                 value, suit = partner_bid
                 value_add = 0
                 if has_nine.get(suit, False):
@@ -152,7 +168,7 @@ class DeterministicPlayer(RandomPlayer):
             raise PlayException("No valid cards to play")
 
         # sort them however you like, then pick the first
-        legal_cards.sort(key=lambda c: (c.suit != trick.trump, c.rank), reverse=True)
+        legal_cards.sort(key=lambda c: (c.suit != trick.atout_suit, c.rank), reverse=True)
         card = legal_cards[0]
 
         trick.add_card(card, self)
