@@ -3,7 +3,7 @@ import yaml
 import wandb
 import argparse
 
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 from train.callbacks import build_callbacks
 from train.utils import make_env_with_masking
@@ -25,10 +25,8 @@ def main(config_path):
             save_code=True
         )
 
-    # env_fn = make_env_with_masking(config['env_id'])
-    # env = DummyVecEnv([env_fn])
-    env_fns = [make_env_with_masking(config['env_id']) for _ in range(config['num_envs'])]
-    env = SubprocVecEnv(env_fns)
+    env_fn = make_env_with_masking(config['env_id'])
+    env = DummyVecEnv([env_fn])
 
     algo = config["algorithm"].upper()
     model = get_algorithm(config, env)

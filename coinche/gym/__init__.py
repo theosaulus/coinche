@@ -64,14 +64,3 @@ register(
 #         'contrat_model_path': './reward_prediction/reward_model.h5'
 #     }
 # )
-
-
-register(
-    id='coinche-v4',
-    entry_point='coinche.gym.env:GymCoinche',
-    kwargs={
-        'players': [
-            GymPlayer(i, n) for i,n in enumerate(("N","E","S","W")) 
-        ],
-    }
-)
