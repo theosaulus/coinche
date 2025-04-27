@@ -261,7 +261,7 @@ class DeepCFRWrapper:
             if (it + 1) % self.log_interval == 0:
                 adv_sizes = [len(buf) for buf in self.adv_memory]
                 print(f"[DCFR] Iter {it+1}/{self.num_iterations}, adv_sizes={adv_sizes}, pol_size={len(self.pol_memory)}")
-                self.evaluate_policy(self.policy_net, num_episodes=5)
+                print(self.evaluate_policy(self.policy_net, num_episodes=5))
                 #print(f"[DCFR] Policy: {print_mlp(self.policy_net)}")
                 #for i, net in enumerate(self.adv_nets):
                     #print(f"[DCFR] Adv Net {i}: {print_mlp(net)}")
@@ -270,6 +270,7 @@ class DeepCFRWrapper:
     def _traverse(self, state, target_player):
         if state.is_terminal():
             return state.returns()[target_player]
+        #assert(not state.is_chance_node())
         if state.is_chance_node():
             val = 0.0
             for a, p in state.chance_outcomes():
@@ -350,7 +351,7 @@ class DeepCFRWrapper:
         print(f"Models saved with prefix '{prefix}'")
 
 
-    def evaluate_policy(self, num_episodes=50):
+    def evaluate_policy(self, policy, num_episodes=50):
         """
         Run full games under the current policy network to estimate
         average return per player over a number of episodes.
@@ -361,7 +362,7 @@ class DeepCFRWrapper:
             while not state.is_terminal():
                 current = state.current_player()
                 obs = state.information_state_tensor(current)
-                logits = self.policy_net(
+                logits = policy(
                     torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
                 ).squeeze(0)
 
@@ -380,6 +381,7 @@ class DeepCFRWrapper:
                 state.apply_action(action)
 
             total_returns += np.array(state.returns(), dtype=float)
+            print(state.returns())
         return total_returns / num_episodes
 
 

@@ -478,16 +478,47 @@ class GymCoinche(Env):
     
     def _get_return(self):
         if not self.bidding_done:
-            return 0.0
+            return np.zeros((4))
         elif len(self.played_tricks) < 8:
-            return 0.0
+            return np.zeros((4))
         else:
             reward = np.array([0.0, 0.0, 0.0, 0.0])
-            for trick in self.played_tricks:
-                trick_score_factor = 1.0 if (trick.winner.index % 2 == self.attacker_team) else -1.0
-                score = trick.score() + 10 * (len(self.played_tricks) == 7)
-                reward[trick.winner.index] += score * trick_score_factor
-                reward[(trick.winner.index + 2)%4] += score * trick_score_factor
+            if not self.played_tricks:
+                return np.ones((4))*-10.0
+            
+            #attacking = 0 if index even and 1 if odd
+
+            attacker_score = self.players[self.attacker_team].self_current_score
+
+            contract = self.contract_value
+            capot_announced = (contract == 250)
+            capot_realized = sum(t.winner.index % 2 == self.attacker_team for t in self.played_tricks) == 8
+
+            multiplier = 1
+            if self.coinche_surcoinche == 1:
+                multiplier = 2
+            elif self.coinche_surcoinche == 2:
+                multiplier = 4
+
+            attacker_points = 0
+            defender_points = 0
+
+            if capot_announced:
+                if capot_realized:
+                    attacker_points = 250 * multiplier
+                else:
+                    defender_points = 250 * multiplier
+            elif attacker_score >= contract:
+                attacker_points = contract * multiplier
+            else:
+                defender_points = 160 * multiplier
+
+            belote_bonus = 20 if any(p.has_belote for p in self.players if p.attacker) else 0
+            attacker_points += belote_bonus
+
+            reward = np.array([
+                attacker_points if p.attacker else defender_points for p in self.players
+            ], dtype=np.float32)
             return reward
     
     def __deepcopy__(self, memo):
