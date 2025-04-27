@@ -29,6 +29,7 @@ def decode_bid_action(action):
     :param action: action number
     :return: (bid_value, atout_suit) or "pass"
     """
+    action = int(action)
     if action == 0:
         return "pass"
     elif action in range(1, 37):
