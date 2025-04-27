@@ -40,8 +40,6 @@ def get_algorithm(config, env):
             seed=config.get("seed", None),
             device=device,
         )
-    elif algo == "CFR": 
-        return CFRWrapper(config, env)
     elif algo == "DCFR": 
         return DeepCFRWrapper(config, env)
 
@@ -57,6 +55,7 @@ def get_algorithm(config, env):
                      policy_kwargs=policy_kwargs, 
                      verbose=1,
                      tensorboard_log="logs/ppo/")
-    
+    #elif algo == "CFR": 
+    #    return CFRWrapper(config, env)
     else:
         raise NotImplementedError(f"Algorithm '{algo}' is not supported yet.")

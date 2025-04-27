@@ -173,9 +173,9 @@ class GymCoinche(Env):
 
         player.set_next_action(action)
         obs = self._get_current_observation()
-        print("PLAYER: ", player.index)
-        print("OBS: ", obs)
-        print("VALID ACTIONS: ", valid_actions)
+        #print("PLAYER: ", player.index)
+        #print("OBS: ", obs)
+        #print("VALID ACTIONS: ", valid_actions)
         player.play_trick(self.trick, obs, self.suits_order)
         self.current_trick_rotation.pop(0)
 
@@ -338,9 +338,9 @@ class GymCoinche(Env):
                 if isinstance(current_player, GymPlayer):
                     break
                 obs = self._get_current_observation()
-                print(obs)
-                print(current_player.index)
-                print(self.trick.cards_in_trick)
+                #print(obs)
+                #print(current_player.index)
+                #print(self.trick.cards_in_trick)
                 current_player.play_trick(self.trick, obs, self.suits_order)
                 self.current_trick_rotation.pop(0)
 
@@ -490,8 +490,31 @@ class GymCoinche(Env):
                 reward[(trick.winner.index + 2)%4] += score * trick_score_factor
             return reward
     
+    def __deepcopy__(self, memo):
+        """
+        Create a true deep copy of this GymCoinche instance.
+        """
+        # Create a new, uninitialized instance
+        cls = self.__class__
+        new_env = cls.__new__(cls)
+        # Track in memo to handle recursive references
+        memo[id(self)] = new_env
+        # Deep-copy every attribute
+        for attr_name, attr_value in self.__dict__.items():
+            setattr(new_env, attr_name, copy.deepcopy(attr_value, memo))
+        return new_env
+
     def copy(self):
+        """
+        Return a deep copy of this environment.
+        """
+        return copy.deepcopy(self)
+
+
+
+    def old_copy(self):
         new_env = GymCoinche(players=[p for p in self.players])  # Shallow copy players
+
 
         # Copy important attributes
         new_env.tricks_reward_factor = copy.deepcopy(self.tricks_reward_factor)

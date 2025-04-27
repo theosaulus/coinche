@@ -171,6 +171,17 @@ def make_mlp(input_dim, output_dim, hidden_sizes):
     layers.append(nn.Linear(prev, output_dim))
     return nn.Sequential(*layers)
 
+def print_mlp(model):
+    for idx, layer in enumerate(model):
+    # some layers (ReLU, Pool) have no weights
+        if hasattr(layer, 'weight'):
+            print(f"Layer {idx} [{layer.__class__.__name__}] weights:")
+            print(layer.weight.data)             # tensor of weights
+        if hasattr(layer, 'bias') and layer.bias is not None:
+            print(f"Layer {idx} [{layer.__class__.__name__}] bias:")
+            print(layer.bias.data)               # tensor of biases
+        print('—' * 40)
+
 class DeepCFRWrapper:
     def __init__(self, config: dict, game_instance=None):
         """
@@ -236,6 +247,7 @@ class DeepCFRWrapper:
 
     def learn(self, total_timesteps, callback=None, use_masking=False):
         for it in range(total_timesteps):
+            print(f"Iteration {it+1}/{total_timesteps}...")
             # collect adv samples
             for player in range(self.num_players):
                 state = self.game.new_initial_state()
@@ -249,6 +261,11 @@ class DeepCFRWrapper:
             if (it + 1) % self.log_interval == 0:
                 adv_sizes = [len(buf) for buf in self.adv_memory]
                 print(f"[DCFR] Iter {it+1}/{self.num_iterations}, adv_sizes={adv_sizes}, pol_size={len(self.pol_memory)}")
+                #self.evaluate_policy(self.policy_net, num_episodes=5)
+                #print(f"[DCFR] Policy: {print_mlp(self.policy_net)}")
+                #for i, net in enumerate(self.adv_nets):
+                    #print(f"[DCFR] Adv Net {i}: {print_mlp(net)}")
+
 
     def _traverse(self, state, target_player):
         if state.is_terminal():
@@ -332,6 +349,8 @@ class DeepCFRWrapper:
         torch.save(self.policy_net.state_dict(), f"{prefix}_policy.pt")
         print(f"Models saved with prefix '{prefix}'")
 
+
+    
 
 class OnlineCFRWrapper:
     def __init__(self, config, env):
