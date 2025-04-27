@@ -26,7 +26,7 @@ def main(config_path):
             save_code=True
         )
 
-    # env_fn = make_env_with_masking(config['env_id'])
+    # env_fn = make_env_with_masking(config['env_id']) # keep for debugging! breakpoint does not work with SubprocVecEnv
     # env = DummyVecEnv([env_fn])
     env_fns = [make_env_with_masking(config['env_id']) for _ in range(config['num_envs'])]
     env = SubprocVecEnv(env_fns)
