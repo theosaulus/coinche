@@ -5,7 +5,7 @@ tf.disable_v2_behavior()
 from sb3_contrib.ppo_mask import MaskablePPO
 from sb3_contrib import QRDQN
 
-from train.wrapper import CFRWrapper, DeepCFRWrapper, OnlineCFRWrapper
+from train.wrapper import DeepCFRWrapper, OnlineCFRWrapper
 #from coinche.gym.env import GymCoinche
 
 #import pyspiel

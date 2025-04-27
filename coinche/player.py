@@ -82,6 +82,7 @@ class RandomPlayer(Player):
         ]
         if not legal_cards:
             #print(legal_cards)
+            breakpoint()
             raise PlayException("No valid cards to play")
 
         card = random.choice(legal_cards)

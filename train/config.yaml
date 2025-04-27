@@ -1,6 +1,6 @@
 project_name: coincheadversarial
 wandb: True
-algorithm: OCFR #PPO
+algorithm: DCFR #PPO
 env_id: coinche-v3
 total_timesteps: 100 #00
 
