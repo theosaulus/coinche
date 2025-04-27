@@ -261,7 +261,7 @@ class DeepCFRWrapper:
             if (it + 1) % self.log_interval == 0:
                 adv_sizes = [len(buf) for buf in self.adv_memory]
                 print(f"[DCFR] Iter {it+1}/{self.num_iterations}, adv_sizes={adv_sizes}, pol_size={len(self.pol_memory)}")
-                #self.evaluate_policy(self.policy_net, num_episodes=5)
+                self.evaluate_policy(self.policy_net, num_episodes=5)
                 #print(f"[DCFR] Policy: {print_mlp(self.policy_net)}")
                 #for i, net in enumerate(self.adv_nets):
                     #print(f"[DCFR] Adv Net {i}: {print_mlp(net)}")
@@ -350,7 +350,38 @@ class DeepCFRWrapper:
         print(f"Models saved with prefix '{prefix}'")
 
 
-    
+    def evaluate_policy(self, num_episodes=50):
+        """
+        Run full games under the current policy network to estimate
+        average return per player over a number of episodes.
+        """
+        total_returns = np.zeros(self.num_players, dtype=float)
+        for _ in range(num_episodes):
+            state = self.game.new_initial_state()
+            while not state.is_terminal():
+                current = state.current_player()
+                obs = state.information_state_tensor(current)
+                logits = self.policy_net(
+                    torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                ).squeeze(0)
+
+                # mask out illegal actions
+                legal = state.legal_actions()
+                mask = torch.zeros(self.num_actions, device=logits.device)
+                mask[legal] = 1
+                unscaled = torch.exp(logits) * mask
+
+                # normalize, detach and bring to CPU numpy
+                probs = (unscaled / unscaled.sum())
+                probs = probs.detach().cpu().numpy()
+
+                # sample only among legal actions
+                action = np.random.choice(legal, p=probs[legal])
+                state.apply_action(action)
+
+            total_returns += np.array(state.returns(), dtype=float)
+        return total_returns / num_episodes
+
 
 class OnlineCFRWrapper:
     def __init__(self, config, env):
