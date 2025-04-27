@@ -1,0 +1,126 @@
+diff --git a/coinche/gym/env.py b/coinche/gym/env.py
+index 817b4d5..402dfbc 100644
+--- a/coinche/gym/env.py
++++ b/coinche/gym/env.py
+@@ -332,6 +332,16 @@ class GymCoinche(Env):
+                 current_player.play_trick(self.trick, obs, self.suits_order)
+                 self.current_trick_rotation.pop(0)
+ 
++    def _get_current_player(self):
++        # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
++        if not self.bidding_done or (self.bidding_done and not self.current_trick_rotation):
++            current_player = self.players[self.current_bidding_player_index]
++            
++        else:
++            current_player = self.current_trick_rotation[0]
++            
++        return current_player
++    
+     def _get_current_observation(self):
+         # self.observation_space = [spaces.Discrete(2)] * (32 + 32 + 32) + [spaces.Discrete(10), spaces.Discrete(2)]
+         if not self.bidding_done or (self.bidding_done and not self.current_trick_rotation):
+@@ -437,6 +447,12 @@ class GymCoinche(Env):
+         else:
+             return self._get_valid_trick_actions(self.trick)
+         
++    def _legal_action(self, player=None):
++        if not self.bidding_done:
++            return self._get_valid_bid_actions(self.current_bid)
++        else:
++            return self._get_valid_trick_actions(self.trick)
++        
+     def get_action_mask(self):
+         # For stable-baslines3
+         legal_actions = self._legal_action()
+diff --git a/requirements.txt b/requirements.txt
+index 690e087..0098f4e 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,6 +1,14 @@
+-numpy==2.2.4
++#numpy==2.2.4
++
+ gymnasium==1.1.1
+ torch==2.6.0
+ wandb==0.19.9
+ stable-baselines3[extra]==2.6.0
+-sb3-contrib==2.6.0
+\ No newline at end of file
++sb3-contrib==2.6.0
++
++tensorflow
++numpy<2.0
++open-spiel>=1.2
++gym==0.26.0 
++
++scikit-learn
+\ No newline at end of file
+diff --git a/train/algorithm_choice.py b/train/algorithm_choice.py
+index 69a1a6f..6f0ad50 100644
+--- a/train/algorithm_choice.py
++++ b/train/algorithm_choice.py
+@@ -1,4 +1,19 @@
++import numpy as np
++import tensorflow.compat.v1 as tf
++tf.disable_v2_behavior()
++
+ from sb3_contrib.ppo_mask import MaskablePPO
++from sb3_contrib import QRDQN
++
++from train.wrapper import OnlineCFRWrapper, OnlineDeepCFRWrapper
++#from coinche.gym.env import GymCoinche
++
++#import pyspiel
++#from open_spiel.python.algorithms import cfr, deep_cfr, nfsp
++#from open_spiel.python import rl_environment
++
++
++
+ 
+ def get_algorithm(config, env):
+     algo = config["algorithm"].upper()
+@@ -9,5 +24,22 @@ def get_algorithm(config, env):
+             verbose=1,
+             tensorboard_log="logs/ppo/",
+         )
++    
++    elif algo == "DCFR": 
++        return OnlineDeepCFRWrapper(config, env)
++
++    elif algo == "OCFR": #DO Deep CFR
++        #game = pyspiel.load_game("coinche")
++        return OnlineCFRWrapper(config, env)
++    
++    elif algo == "QRDQN":
++        #need to fix if we want to implement -- model.learn( --> TypeError: QRDQN.learn() got an unexpected keyword argument 'use_masking'
++        policy_kwargs = dict(n_quantiles=50)
++        return QRDQN("MlpPolicy", 
++                     env, 
++                     policy_kwargs=policy_kwargs, 
++                     verbose=1,
++                     tensorboard_log="logs/ppo/")
++    
+     else:
+         raise NotImplementedError(f"Algorithm '{algo}' is not supported yet.")
+\ No newline at end of file
+diff --git a/train/config.yaml b/train/config.yaml
+index f90b437..f0c1d69 100644
+--- a/train/config.yaml
++++ b/train/config.yaml
+@@ -1,12 +1,12 @@
+ project_name: coincheadversarial
+ wandb: True
+-algorithm: PPO
++algorithm: DCFR #PPO
+ env_id: coinche-v3
+-total_timesteps: 10000
++total_timesteps: 100 #00
+ 
+ log_every: 1                 # Log every episode
+-checkpoint_every: 10000       # Save model every N steps
+-eval_every: 10000             # (Optional) evaluate agent every N steps
++checkpoint_every: 100 #00       # Save model every N steps
++eval_every: 100 #00             # (Optional) evaluate agent every N steps
+ gradient_save_freq: 0         # (Optional) save gradient every N steps (0 is never)
+ 
+ log_game_metrics: true       # Log contract, suit, etc.

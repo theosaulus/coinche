@@ -1,0 +1,58 @@
+_wandb:
+    value:
+        cli_version: 0.19.9
+        code_path: code/train.py
+        m: []
+        python_version: 3.10.9
+        t:
+            "1":
+                - 1
+                - 2
+                - 3
+                - 55
+            "2":
+                - 1
+                - 2
+                - 3
+                - 55
+            "3":
+                - 16
+                - 23
+                - 35
+                - 55
+            "4": 3.10.9
+            "5": 0.19.9
+            "8":
+                - 5
+            "12": 0.19.9
+            "13": darwin-arm64
+algorithm:
+    value: DeepCFR
+batch_size:
+    value: 4096
+checkpoint_every:
+    value: 100
+env_id:
+    value: coinche-v3
+eval_every:
+    value: 100
+gradient_save_freq:
+    value: 0
+log_every:
+    value: 1
+log_game_metrics:
+    value: true
+n_steps:
+    value: 2048
+num_envs:
+    value: 8
+policy:
+    value: MultiInputPolicy
+project_name:
+    value: coincheadversarial
+save_game_replays:
+    value: true
+total_timesteps:
+    value: 10000
+wandb:
+    value: true

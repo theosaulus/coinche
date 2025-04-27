@@ -81,6 +81,7 @@ class RandomPlayer(Player):
             if trick._assert_valid_play_TrueFalse(card, self)
         ]
         if not legal_cards:
+            #print(legal_cards)
             raise PlayException("No valid cards to play")
 
         card = random.choice(legal_cards)
