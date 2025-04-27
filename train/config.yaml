@@ -1,4 +1,5 @@
 project_name: coincheadversarial
+
 wandb: False
 algorithm: PPO
 policy: MlpPolicy
