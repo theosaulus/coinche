@@ -121,6 +121,7 @@ class GymCoinche(Env):
 
         if self.current_bid is None and len(self.bids) >= 4:
             # Everyone passed without bid: end of the round, bad reward to everyone
+            self.bidding_done = True
             obs = self._get_current_observation()
             reward = -10
             info = self.original_hands
@@ -267,6 +268,9 @@ class GymCoinche(Env):
         self.passes_in_row = 0
         self.current_bidding_player_index = (self.dealer_index + 1) % 4
         self.bidding_done = False
+        self.coinche_surcoinche = 0
+        self.contract_value = None
+        self.atout_suit = None
 
     def _process_bidding(self, action, player):
         self.bids.append(action)
@@ -379,7 +383,7 @@ class GymCoinche(Env):
         # guardrails for None
         contract_val = 0.0 if self.contract_value is None else float(self.contract_value)
         atout_code = -1.0 if self.atout_suit is None else float(self.atout_suit.value)
-        phase = 0.0 if not self.bidding_done else 1.0
+        phase = float(self.bidding_done)
         extra = np.array([
             float(current_player.attacker), # 0/1
             contract_val, # 0–250

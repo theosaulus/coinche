@@ -1,18 +1,21 @@
 project_name: coincheadversarial
-wandb: True
-algorithm: DCFR #PPO
-env_id: coinche-v3
-total_timesteps: 100 #00
+
+wandb: False
+algorithm: PPO
+policy: MlpPolicy
+env_id: coinche-v4
+total_timesteps: 1_000_000
 
 log_every: 1                 # Log every episode
-checkpoint_every: 100 #00       # Save model every N steps
-eval_every: 100 #00             # (Optional) evaluate agent every N steps
+checkpoint_every: 10_000       # Save model every N steps
+eval_every: 10_000             # (Optional) evaluate agent every N steps
+
 gradient_save_freq: 0         # (Optional) save gradient every N steps (0 is never)
 
 log_game_metrics: true       # Log contract, suit, etc.
 save_game_replays: true      # Save replays for analysis
 
 num_envs: 8
-n_steps: 2048
-batch_size: 4096
-policy: MultiInputPolicy
+n_steps: 512
+batch_size: 256
+n_epochs: 10
