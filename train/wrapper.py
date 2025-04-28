@@ -195,6 +195,8 @@ class DeepCFRWrapper:
           - 'pol_hidden', 'pol_lr', 'pol_mem_size'
         game_instance: optional initialized CoincheOpenSpiel
         """
+
+        self.policy_player_input = True
         # store full config
         self.user_config = config
 
@@ -203,7 +205,9 @@ class DeepCFRWrapper:
             'adv_hidden': [64, 64], 'adv_lr': 1e-3, 'adv_mem_size': 100_000,
             'pol_hidden': [64, 64], 'pol_lr': 1e-3, 'pol_mem_size': 100_000,
             'batch_size': 256, 'num_iterations': 100, 'log_interval': 10,
+            'num_traversals': 5,
         }
+
         # map user config keys to our internal settings
         # for iterations, use 'total_timesteps' if present
         defaults['num_iterations'] = config.get('total_timesteps', defaults['num_iterations'])
@@ -223,6 +227,7 @@ class DeepCFRWrapper:
         self.batch_size = defaults['batch_size']
         self.num_iterations = defaults['num_iterations']
         self.log_interval = defaults['log_interval']
+        self.num_traversals = config.get('num_traversals', defaults['num_traversals'])
         # initialize game
         params = config.get('params', {})
         self.game = CoincheOpenSpiel(params=params)
@@ -239,7 +244,7 @@ class DeepCFRWrapper:
         self.adv_opts = [optim.Adam(net.parameters(), lr=self.adv_lr)
                          for net in self.adv_nets]
 
-        self.policy_net = make_mlp(1+self.obs_dim, self.num_actions, self.pol_hidden)
+        self.policy_net = make_mlp(self.policy_player_input+self.obs_dim, self.num_actions, self.pol_hidden)
         self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=self.pol_lr)
 
         # memories
@@ -249,10 +254,24 @@ class DeepCFRWrapper:
     def learn(self, total_timesteps, callback=None, use_masking=False):
         for it in range(total_timesteps):
             #print(f"Iteration {it+1}/{total_timesteps}...")
+            # initialize adv networks
+            self.adv_nets = [
+                make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
+                for _ in range(self.num_players)
+            ]
+            self.adv_opts = [
+                optim.Adam(net.parameters(), lr=self.adv_lr)
+                for net in self.adv_nets
+            ]
+            self.adv_memory = [
+                ReplayBuffer(self.adv_mem_size)
+                for _ in range(self.num_players)
+            ]
             # collect adv samples
             for player in range(self.num_players):
-                state = self.game.new_initial_state()
-                self._traverse(state, player)
+                for traversal in range(self.num_traversals):
+                    state = self.game.new_initial_state()
+                    self._traverse(state, player)
                 self._optimize_adv(player)
                 # policy update
             self._optimize_policy()
@@ -287,6 +306,13 @@ class DeepCFRWrapper:
         """
         # Terminal
         if state.is_terminal():
+            '''print("Bids: ", state.env.bids)
+            all_played = [
+                (card.rank, card.suit)
+                for trick in state.env.played_tricks
+                for card in trick.cards
+            ]
+            print("Trcks: ", all_played)'''
             return state.returns()[target_player]
 
         # Chance node
@@ -299,9 +325,10 @@ class DeepCFRWrapper:
         legal = state.legal_actions()
 
         # Compute masked softmax
-        logits = self.policy_net(
-            torch.tensor(np.insert(obs, 0, current_player), dtype=torch.float32).unsqueeze(0)
-        ).squeeze(0)
+        if self.policy_player_input:
+            logits = self.policy_net(torch.tensor(np.insert(obs, 0, current_player), dtype=torch.float32).unsqueeze(0) ).squeeze(0)
+        else:
+            logits = self.policy_net(torch.tensor(obs, dtype=torch.float32).unsqueeze(0) ).squeeze(0)
 
         probs = self._masked_softmax(logits, legal)
 
@@ -315,17 +342,19 @@ class DeepCFRWrapper:
             u_s = self._traverse(next_state, target_player, pi * probs[a_s], pi_op)
             # Baseline from adv network
             v = self.adv_nets[current_player](torch.tensor(obs, dtype=torch.float32).unsqueeze(0))
-            regret = (u_s - v[0, a_s].item()) / pi_op
-            self.adv_memory[current_player].push(obs, a_s, regret, current_player)
+            advantage = (u_s - v[0, a_s].item()) / pi_op
+            self.adv_memory[current_player].push(obs, a_s, advantage, current_player)
 
             with torch.no_grad():
                 adv_vals = self.adv_nets[current_player](torch.tensor(obs, dtype=torch.float32).unsqueeze(0)).squeeze(0).cpu().numpy()
 
-            #self.pol_memory.push(np.insert(obs, 0, current_player), a_s, regret, current_player)
-            adv_val_pos = np.maximum(adv_vals, 0)
-            sum_pos = adv_val_pos.sum()
-            pi_target = adv_val_pos / sum_pos if sum_pos > 0 else np.ones_like(adv_val_pos) / len(adv_val_pos)
+            legal_mask = np.isin(np.arange(len(adv_vals)), legal).astype(float)
+            adv_val_pos = np.clip(adv_vals, 0, None) * legal_mask
+            total_adv_val_pos = adv_val_pos.sum()
+            pi_target = adv_val_pos / total_adv_val_pos if total_adv_val_pos > 0 else legal_mask / legal_mask.sum()
+            #print("pi target: ", pi_target)
             self.pol_memory.push(obs, pi_target, None, current_player)
+                
             return u_s
         else:
             # Opponent node: update opponent reach
@@ -341,6 +370,7 @@ class DeepCFRWrapper:
         preds = self.adv_nets[player](obs)
         chosen = preds.gather(1, acts.unsqueeze(1)).squeeze(1)
         loss = nn.MSELoss()(chosen, advs)
+        #print(f"Advantage Loss: {loss.item()}")
         opt = self.adv_opts[player]
         opt.zero_grad(); loss.backward(); opt.step()
 
@@ -348,13 +378,17 @@ class DeepCFRWrapper:
         if len(self.pol_memory) < self.batch_size:
             return
         batch = self.pol_memory.sample(self.batch_size)
-        obs_batch = torch.tensor([np.insert(b.obs, 0, b.player) for b in batch], dtype=torch.float32)
+        if self.policy_player_input:
+            obs_batch = torch.tensor([np.insert(b.obs, 0, b.player) for b in batch], dtype=torch.float32)
+        else:
+            obs_batch = torch.tensor([b.obs for b in batch], dtype=torch.float32)
         pi_targets = torch.tensor([b.action for b in batch], dtype=torch.float32)
 
         logits = self.policy_net(obs_batch)
         pred_pi = torch.softmax(logits, dim=1)
 
         loss = nn.MSELoss()(pred_pi, pi_targets)
+        #print(f"Policy Loss: {loss.item()}")
         self.policy_opt.zero_grad(); loss.backward(); self.policy_opt.step()
 
 
@@ -379,9 +413,11 @@ class DeepCFRWrapper:
             while not state.is_terminal():
                 current = state.current_player()
                 obs = state.information_state_tensor(current)
-                logits = policy(
-                    torch.tensor(np.insert(obs,0,current), dtype=torch.float32).unsqueeze(0)
-                ).squeeze(0)
+                if self.policy_player_input:
+                    logits = policy(torch.tensor(np.insert(obs,0,current), dtype=torch.float32).unsqueeze(0)).squeeze(0)
+                else:
+                    logits = self.policy_net(torch.tensor(obs, dtype=torch.float32).unsqueeze(0) ).squeeze(0)
+
 
                 # mask out illegal actions
                 legal = state.legal_actions()
@@ -394,7 +430,9 @@ class DeepCFRWrapper:
                 probs = probs.detach().cpu().numpy()
 
                 # sample only among legal actions
-                action = np.random.choice(legal, p=probs[legal])
+                #action = np.random.choice(legal, p=probs[legal])
+                #take most likely action
+                action = legal[np.argmax(probs[legal])]
 
                 #print("legal actions: ", legal)
                 #print(f"Action sampled: {action}")
@@ -408,7 +446,7 @@ class DeepCFRWrapper:
             #print("CONTRACT: ", state.env.contract_value)
 
             total_returns += np.array(state.returns(), dtype=float)
-            print(state.returns())
+            #print(state.returns())
         return total_returns / num_episodes
 
 

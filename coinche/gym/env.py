@@ -451,18 +451,20 @@ class GymCoinche(Env):
 
     def _get_valid_bid_actions(self, current_bid):
         if current_bid is None:
-            return list(range(1, 41)) + [0]  # all bids except coinche/surcoinche + pass
+            return list(range(1, 41)) + [0]  # all bids except coinche/surcoinche + pass 
+            # list(range(1, 37)) + [0]  #
         elif self.coinche_surcoinche == 1:
-            return [0, 42] # surcoinche + pass
+            return [42, 0] # surcoinche + pass
         elif self.coinche_surcoinche == 2:
             return [0]
         elif current_bid[0] == 250:
-            return [0, 41]  # pass + coinche
+            return [41, 0]  # pass + coinche
         else:
             min_bid_value = current_bid[0] + 10
             min_action_index = 1 + 4 * ((min_bid_value - 80) // 10)
-            return [0]  + list(range(min_action_index, 42))  # all possible bids except surcoinche + pass
-    
+            return list(range(min_action_index, 42)) + [0]  # all possible bids except surcoinche + pass
+            #list(range(min_action_index, 37)) + [0]#
+
     def _get_valid_trick_actions(self, trick):
         valid_actions = []
         for card in self.current_trick_rotation[0].cards:
