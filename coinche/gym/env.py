@@ -215,6 +215,8 @@ class GymCoinche(Env):
             info = self.original_hands
 
             attacker_score = self.players[self.attacker_team].self_current_score
+            defender_score = self.players[1 - self.attacker_team].self_current_score
+            
             contract = self.contract_value
             capot_announced = (contract == 250)
             capot_realized = sum(t.winner.index % 2 == self.attacker_team for t in self.played_tricks) == 8
@@ -249,7 +251,7 @@ class GymCoinche(Env):
             info["coinche_surcoinche"] = self.coinche_surcoinche
 
             info["attacker_score_raw"] = attacker_score
-            info["defender_score_raw"] = 162 - attacker_score
+            info["defender_score_raw"] = defender_score
 
             info["total_attacker_points"] = attacker_points
             info["total_defender_points"] = defender_points

@@ -75,6 +75,8 @@ class FinalScoreStatsCallback(BaseCallback):
         self.log_in_wandb = log_in_wandb
         # Buffers for attacker vs defender
         self.atk_rate = []
+        self.atk_bid_precision = []
+        self.opponent_bid_precision = []
         self.atk_rewards = []
         self.def_rewards = []
         self.atk_success = []
@@ -115,9 +117,9 @@ class FinalScoreStatsCallback(BaseCallback):
                 else:
                     self.def_success.append(1 - is_contract_realized)
                 # capot
-                ann = bool(info.get("capot_announced", False))
+                capot_ann = bool(info.get("capot_announced", False))
                 real = bool(info.get("capot_realized", False))
-                (self.atk_capot_ann if is_atk else self.def_capot_ann).append(ann)
+                (self.atk_capot_ann if is_atk else self.def_capot_ann).append(capot_ann)
                 (self.atk_capot_real if is_atk else self.def_capot_real).append(real)
                 # contract value
                 val = float(info.get("contract_value", 0))
@@ -133,6 +135,14 @@ class FinalScoreStatsCallback(BaseCallback):
                 real_s = ann_s and info.get("contract_realized", False)
                 (self.atk_surcoin_ann if is_atk else self.def_surcoin_ann).append(ann_s)
                 (self.atk_surcoin_real if is_atk else self.def_surcoin_real).append(real_s)
+                # bid precision: compare contract_value with the score obtained, excluding capot
+                bid = float(info.get("contract_value", 0))
+                atk_score = float(info.get("attacker_score_raw", 0))
+                if not (capot_ann or ann_c or ann_s):
+                    if is_atk:
+                        self.atk_bid_precision.append(abs(atk_score - bid))
+                    else:
+                        self.opponent_bid_precision.append(abs(atk_score - bid))
 
         # print & optionally log
         if self.n_calls % self.print_freq == 0 and (self.atk_rewards or self.def_rewards):
@@ -171,6 +181,9 @@ class FinalScoreStatsCallback(BaseCallback):
             summarize("Surcoinche win rate", self.atk_surcoin_real)
             summarize("Opponent surcoinche announce rate", self.def_surcoin_ann)
             summarize("Opponent surcoinche win rate", self.def_surcoin_real)
+            # bid precision
+            summarize("Bid precision", self.atk_bid_precision)
+            summarize("Opponent bid precision", self.opponent_bid_precision)
             print()
 
             if self.log_in_wandb:
@@ -187,7 +200,8 @@ class FinalScoreStatsCallback(BaseCallback):
                         self.atk_coinche_ann, self.def_coinche_ann,
                         self.atk_coinche_real, self.def_coinche_real,
                         self.atk_surcoin_ann, self.def_surcoin_ann,
-                        self.atk_surcoin_real, self.def_surcoin_real]:
+                        self.atk_surcoin_real, self.def_surcoin_real,
+                        self.atk_bid_precision, self.opponent_bid_precision]:
                 buf.clear()
 
         return True
