@@ -1,5 +1,6 @@
 project_name: coincheadversarial
 wandb: True
+debugging: False           # Disables parallelization to allow breakpoints  
 algorithm: PPO
 policy: MlpPolicy
 env_id: coinche-v4
