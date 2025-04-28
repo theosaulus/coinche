@@ -74,6 +74,7 @@ class FinalScoreStatsCallback(BaseCallback):
         self.print_freq = print_freq
         self.log_in_wandb = log_in_wandb
         # Buffers for attacker vs defender
+        self.atk_rate = []
         self.atk_rewards = []
         self.def_rewards = []
         self.atk_success = []
@@ -101,6 +102,11 @@ class FinalScoreStatsCallback(BaseCallback):
             if done and "gymplayer_attacker_yn" in info:
                 is_atk = bool(info["gymplayer_attacker_yn"])
                 is_contract_realized = bool(info.get("contract_realized", False))
+                # attacking rate
+                if is_atk: 
+                    self.atk_rate.append(1)
+                else:
+                    self.atk_rate.append(0)
                 # reward
                 (self.atk_rewards if is_atk else self.def_rewards).append(rew)
                 # contract realized success
@@ -138,7 +144,9 @@ class FinalScoreStatsCallback(BaseCallback):
                     count = len(buf)
                     print(f" {prefix}: {mean:.3f} ({count})")
                     metrics[f"{prefix}"] = float(mean)
-
+            
+            # attacking rate
+            summarize("Attacking rate", self.atk_rate)
             # rewards
             summarize("As attacker reward_mean", self.atk_rewards)
             summarize("As defender reward_mean", self.def_rewards)
@@ -170,7 +178,8 @@ class FinalScoreStatsCallback(BaseCallback):
                 wandb.log(metrics)
 
             # clear all
-            for buf in [self.atk_rewards, self.def_rewards,
+            for buf in [self.atk_rate,
+                        self.atk_rewards, self.def_rewards,
                         self.atk_success, self.def_success,
                         self.atk_capot_ann, self.def_capot_ann,
                         self.atk_capot_real, self.def_capot_real,
