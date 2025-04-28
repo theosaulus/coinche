@@ -84,8 +84,6 @@ class FinalScoreStatsCallback(BaseCallback):
         self.def_capot_real = []
         self.atk_contr_val = []
         self.def_contr_val = []
-        self.atk_contr_real = []
-        self.def_contr_real = []
         self.atk_coinche_ann = []
         self.def_coinche_ann = []
         self.atk_coinche_real = []
@@ -102,31 +100,31 @@ class FinalScoreStatsCallback(BaseCallback):
         for info, done, rew in zip(infos, dones, rewards):
             if done and "gymplayer_attacker_yn" in info:
                 is_atk = bool(info["gymplayer_attacker_yn"])
+                is_contract_realized = bool(info.get("contract_realized", False))
                 # reward
                 (self.atk_rewards if is_atk else self.def_rewards).append(rew)
                 # contract realized success
                 if is_atk:
-                    self.atk_success.append(bool(info.get("contract_realized", False)))
+                    self.atk_success.append(is_contract_realized)
                 else:
-                    self.def_success.append(1 - bool(info.get("contract_realized", False)))
+                    self.def_success.append(1 - is_contract_realized)
                 # capot
                 ann = bool(info.get("capot_announced", False))
                 real = bool(info.get("capot_realized", False))
                 (self.atk_capot_ann if is_atk else self.def_capot_ann).append(ann)
                 (self.atk_capot_real if is_atk else self.def_capot_real).append(real)
-                # contract value & realized
+                # contract value
                 val = float(info.get("contract_value", 0))
                 (self.atk_contr_val if is_atk else self.def_contr_val).append(val)
-                (self.atk_contr_real if is_atk else self.def_contr_real).append(bool(info.get("contract_realized", False)))
                 # coinche / surcoinche
                 coin = info.get("coinche_surcoinche", 0)
                 ann_c = (coin == 1)
-                real_c = ann_c and not info.get("contract_realized", False)
+                real_c = ann_c and info.get("contract_realized", False)
                 (self.atk_coinche_ann if is_atk else self.def_coinche_ann).append(ann_c)
                 (self.atk_coinche_real if is_atk else self.def_coinche_real).append(real_c)
                 # surcoinche
                 ann_s = (coin == 2)
-                real_s = ann_s and not info.get("contract_realized", False)
+                real_s = ann_s and info.get("contract_realized", False)
                 (self.atk_surcoin_ann if is_atk else self.def_surcoin_ann).append(ann_s)
                 (self.atk_surcoin_real if is_atk else self.def_surcoin_real).append(real_s)
 
@@ -152,11 +150,9 @@ class FinalScoreStatsCallback(BaseCallback):
             summarize("Capot realisation rate", self.atk_capot_real)
             summarize("Opponent capot announce rate", self.def_capot_ann)
             summarize("Opponent capot realisation rate", self.def_capot_real)
-            # contract value & realized
+            # contract value
             summarize("Contract value mean", self.atk_contr_val)
             summarize("Opponent contract value mean", self.def_contr_val)
-            summarize("Contract realisation rate", self.atk_contr_real)
-            summarize("Opponent contract realisation rate", self.def_contr_real)
             # coinche
             summarize("Coinche announce rate", self.atk_coinche_ann)
             summarize("Coinche win rate", self.atk_coinche_real)
@@ -179,7 +175,6 @@ class FinalScoreStatsCallback(BaseCallback):
                         self.atk_capot_ann, self.def_capot_ann,
                         self.atk_capot_real, self.def_capot_real,
                         self.atk_contr_val, self.def_contr_val,
-                        self.atk_contr_real, self.def_contr_real,
                         self.atk_coinche_ann, self.def_coinche_ann,
                         self.atk_coinche_real, self.def_coinche_real,
                         self.atk_surcoin_ann, self.def_surcoin_ann,

@@ -214,7 +214,7 @@ class GymCoinche(Env):
             obs = self._get_round_observation()
             info = self.original_hands
 
-            attacker_score = self.total_score
+            attacker_score = self.players[self.attacker_team].self_current_score
             contract = self.contract_value
             capot_announced = (contract == 250)
             capot_realized = sum(t.winner.index % 2 == self.attacker_team for t in self.played_tricks) == 8
@@ -253,7 +253,7 @@ class GymCoinche(Env):
 
             info["total_attacker_points"] = attacker_points
             info["total_defender_points"] = defender_points
-            info["gymplayer_attacker_yn"] =  1 - self.attacker_team
+            info["gymplayer_attacker_yn"] =  1 - self.attacker_team # Assuming that GymPlayer(s) are position 0 and 2
 
             terminated = True
             # Assuming that GymPlayer(s) are position 0 and 2
