@@ -53,3 +53,29 @@ register(
         ],
     }
 )
+
+register(
+    id='coinche-v6',
+    entry_point='coinche.gym.env:GymCoinche',
+    kwargs={
+        'players': [
+            GymPlayer(0, "N"),
+            DeterministicPlayer(1, "E"),
+            GymPlayer(2, "S"),
+            DeterministicPlayer(3, "W"),
+        ],
+    }
+)
+
+register(
+    id='coinche-v7',
+    entry_point='coinche.gym.env:GymCoinche',
+    kwargs={
+        'players': [
+            GymPlayer(0, "N"),
+            RandomPlayer(1, "E"),
+            GymPlayer(2, "S"),
+            RandomPlayer(3, "W"),
+        ],
+    }
+)

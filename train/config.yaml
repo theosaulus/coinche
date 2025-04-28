@@ -3,7 +3,7 @@ wandb: True
 debugging: False           # Disables parallelization to allow breakpoints  
 algorithm: PPO
 policy: MlpPolicy
-env_id: coinche-v4
+env_id: coinche-v6
 total_timesteps: 1_000_000
 
 log_every: 1_000
