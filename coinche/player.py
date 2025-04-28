@@ -71,6 +71,7 @@ class Player:
         ...
 
 
+
 class RandomPlayer(Player):
     def bid(self, obs, valid_bids, suits_order):
         return random.choice(valid_bids)
@@ -86,6 +87,9 @@ class RandomPlayer(Player):
         card = random.choice(legal_cards)
         trick.add_card(card, self)
         self.remove_card(card)
+
+
+
 
 class DeterministicPlayer(RandomPlayer):
     def bid(self, obs, valid_bids, suits_order):
@@ -161,6 +165,111 @@ class DeterministicPlayer(RandomPlayer):
 
         trick.add_card(card, self)
         self.remove_card(card)
+
+
+
+
+class DeterministicPlayer_v2(RandomPlayer):
+    def bid(self, obs, valid_bids, suits_order):
+        # count cards and honors
+        suit_counts = {s: 0 for s in suits_order}
+        has_jack = {s: False for s in suits_order}
+        has_nine = {s: False for s in suits_order}
+        has_ace  = {s: False for s in suits_order}
+        has_ten  = {s: False for s in suits_order}
+        for c in self.cards:
+            suit_counts[c.suit] += 1
+            if c.rank == Rank.JACK: has_jack[c.suit] = True
+            if c.rank == Rank.NINE: has_nine[c.suit] = True
+            if c.rank == Rank.ACE:  has_ace[c.suit]  = True
+            if c.rank == Rank.TEN:  has_ten[c.suit]  = True
+
+        # identify partner's and highest opponent's last suit bid
+        last_partner = int(obs[35])
+        a, b = obs[34], obs[36]
+        last_max_opp = max(0 if a==43 else a, 0 if b==43 else b)
+
+        action = 0
+        # Opening: partner hasn't bid, opponents <=80
+        if last_partner in (0,43) and last_max_opp in (0,1,2,3,4,43):
+            opp80 = last_max_opp in (1,2,3,4)
+            # strong handle: look for 110 first
+            for s in suits_order:
+                if has_jack[s] and has_nine[s] and has_ace[s] and has_ten[s] and suit_counts[s]>=4:
+                    val = 110 + (10 if opp80 else 0)
+                    action = encode_bid_action(val, s)
+                    break
+            else:
+                # 90 fort
+                for s in suits_order:
+                    if has_jack[s] and has_nine[s]:
+                        val = 90 + (10 if opp80 else 0)
+                        action = encode_bid_action(val, s)
+                        break
+                # 80 opening if not 90
+                if action==0:
+                    for s in suits_order:
+                        j,n,c = has_jack[s], has_nine[s], suit_counts[s]
+                        ace_else = any(has_ace[x] for x in suits_order if x!=s)
+                        if (j or n) and (c>=2 or (c>=1 and ace_else)):
+                            val = 80 + (10 if opp80 else 0)
+                            action = encode_bid_action(val, s)
+                            break
+        # Responding to partner's suit (80/90)
+        elif last_partner in range(1,9):
+            base, s = decode_bid_action(last_partner)
+            # highest opponent
+            opp = decode_bid_action(last_max_opp)
+            opp_val = opp[0] if isinstance(opp, tuple) else 0
+            add = 0
+            if has_jack[s]: add += 20
+            if has_nine[s]: add += 10
+            # count outside aces
+            add += 10 * sum(1 for x in suits_order if x!=s and has_ace[x])
+            # penalize singleton
+            if suit_counts[s] <= 1:
+                add -= 10
+            new_val = base + add
+            if new_val > base and new_val > opp_val:
+                action = encode_bid_action(new_val, s)
+        return action if action in valid_bids else 0
+
+    def play_trick(self, trick, obs, suits_order):
+        # gather legal plays
+        legal = [c for c in self.cards if trick._assert_valid_play_TrueFalse(c, self)]
+        if not legal:
+            raise PlayException("No valid cards to play - DeterministicPlayer")
+
+        # LEAD
+        if trick.cards_in_trick == 0:
+            # draw trumps
+            trumps = [c for c in legal if c.suit == trick.atout_suit]
+            if trumps:
+                choice = max(trumps, key=lambda c: c.rank.value)
+            else:
+                # lead Ace of longest side suit
+                counts = {s: sum(1 for c in legal if c.suit==s) for s in suits_order}
+                side = max(counts, key=counts.get)
+                aces = [c for c in legal if c.suit==side and c.rank==Rank.ACE]
+                if aces:
+                    choice = aces[0]
+                else:
+                    choice = max((c for c in legal if c.suit==side), key=lambda c: c.rank.value)
+        # FOLLOW
+        else:
+            # can we win this trick?
+            winners = [c for c in legal if trick.is_player_card_higher_than_highest(c)]
+            if winners:
+                # play minimal winner to keep control
+                choice = min(winners, key=lambda c: (c.suit!=trick.atout_suit, c.rank.value))
+            else:
+                # duck: play lowest
+                choice = min(legal, key=lambda c: (c.suit==trick.atout_suit, c.rank.value))
+
+        trick.add_card(choice, self)
+        self.remove_card(choice)
+
+
 
 
 class SharedPolicy(nn.Module):
