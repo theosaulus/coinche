@@ -70,6 +70,9 @@ class GymCoinche(Env):
         self.original_hands = {}
         self.total_score = 0
 
+        self.rewards = []
+        self.pending_reward_idx = []
+
 
     def reset(self, *, seed=None, options=None):
         if seed is not None:
@@ -95,7 +98,9 @@ class GymCoinche(Env):
         :param action: action to play (either bid or trick)
         :return: obs, reward, done, info
         """
-        if not self.bidding_done:
+        if self.pending_reward_idx:
+            return self.reward_step()
+        elif not self.bidding_done:
             return self.bidding_step(action)
         else:
             return self.trick_step(action)
@@ -212,7 +217,7 @@ class GymCoinche(Env):
             obs = self._get_round_observation()
             info = self.original_hands
 
-            attacker_score = self.total_score
+            attacker_score = self.players[self.attacker_team].self_current_score
             contract = self.contract_value
             capot_announced = (contract == 250)
             capot_realized = sum(t.winner.index % 2 == self.attacker_team for t in self.played_tricks) == 8
@@ -239,6 +244,11 @@ class GymCoinche(Env):
             belote_bonus = 20 if any(p.has_belote for p in self.players if p.attacker) else 0
             attacker_points += belote_bonus
 
+            rewards = np.array([
+                attacker_points if p.attacker else defender_points for p in self.players
+            ], dtype=np.float32)
+            self.rewards = rewards
+
             info["capot_realized"] = capot_realized
             info["capot_announced"] = capot_announced
             info["contract_value"] = contract
@@ -251,11 +261,38 @@ class GymCoinche(Env):
             info["total_attacker_points"] = attacker_points
             info["total_defender_points"] = defender_points
 
-            terminated = True
-            reward = 0
+            reward = rewards[self.current_trick_rotation[0].index]
+            
+            # add other GymPlayers to the pending reward indexes
+            rotated = self._create_trick_rotation(self.current_trick_rotation[1].index)
+            self.pending_reward_idx = [
+                p.index
+                for p in rotated
+                if p.index != self.current_trick_rotation[0].index and isinstance(p, GymPlayer)
+            ]
+
+            if self.pending_reward_idx:
+                terminated = False # Go over the other GymPlayers
+            else:
+                terminated = True
+                
             return obs, reward, terminated, False, info
 
-
+    def reward_step(self):
+        # Final reward step for the GymPlayer, the action is ignored
+        while self.pending_reward_idx:
+            player_index = self.pending_reward_idx.pop(0)
+            player = self.players[player_index]
+            if isinstance(player, GymPlayer):
+                reward = self.rewards[player_index]
+                obs = self._get_round_observation()
+                info = {}
+                if self.pending_reward_idx:
+                    terminated = False
+                else:
+                    terminated = True
+                return obs, reward, terminated, False, info
+            
     def _init_bidding_phase(self):
         self.bids = []
         self.current_bid = None
@@ -266,6 +303,8 @@ class GymCoinche(Env):
         self.coinche_surcoinche = 0
         self.contract_value = None
         self.atout_suit = None
+        self._pending_final_rewards = None
+        self._pending_reward_idx = 0
 
     def _process_bidding(self, action, player):
         self.bids.append(action)
@@ -433,6 +472,8 @@ class GymCoinche(Env):
             return list(range(min_action_index, 42)) + [0]  # all possible bids except surcoinche + pass
     
     def _get_valid_trick_actions(self, trick):
+        if self.pending_reward_idx:
+            return [PAD_ACTION]
         valid_actions = []
         for card in self.current_trick_rotation[0].cards:
             if trick._assert_valid_play_TrueFalse(card, self.current_trick_rotation[0]):
