@@ -46,6 +46,8 @@ class GymCoinche(Env):
         ]
         
         self.tricks_reward_factor = 0.1
+        self.final_reward_linear = [100, 4000]
+        self.linear_reward_increase = False
         self.deck = Deck()
         self.round_number = 0
         self.reshuffle_deck_each_round = True
@@ -55,7 +57,7 @@ class GymCoinche(Env):
         self.bids = []
         self.current_bid = None # tuple: (bid_value, atout_suit)
         self.bid_winning_player = None
-        self.passes_in_row = 0 #TODO: Check if bidding is ok for the first turn
+        self.passes_in_row = 0
 
         self.atout_suit = None
         self.contract_value = None
@@ -252,7 +254,11 @@ class GymCoinche(Env):
             info["total_defender_points"] = defender_points
 
             terminated = True
-            reward = 0
+            # Assuming that GymPlayer(s) are position 0 and 2
+            reward = attacker_points if not self.attacker_team else defender_points
+            if self.linear_reward_increase:
+                weight = min(1, max(0, (self.round_number - self.final_reward_linear[0]) / self.final_reward_linear[1]))
+                reward = reward * weight
             return obs, reward, terminated, False, info
 
 
