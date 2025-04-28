@@ -1,5 +1,5 @@
 from gymnasium.envs.registration import register
-from coinche.player import RandomPlayer, AIPlayer, DeterministicPlayer
+from coinche.player import RandomPlayer, AIPlayer, DeterministicPlayer, DeterministicPlayer_v2
 from coinche.gym.gymplayer import GymPlayer
 import os
 import warnings
@@ -79,6 +79,19 @@ register(
             RandomPlayer(1, "E"),
             GymPlayer(2, "S"),
             RandomPlayer(3, "W"),
+        ],
+    }
+)
+
+register(
+    id='coinche-v8',
+    entry_point='coinche.gym.env:GymCoinche',
+    kwargs={
+        'players': [
+            GymPlayer(0, "N"),
+            DeterministicPlayer_v2(1, "E"),
+            GymPlayer(2, "S"),
+            DeterministicPlayer_v2(3, "W"),
         ],
     }
 )

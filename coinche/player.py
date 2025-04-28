@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Union
 from random import choice, sample
 from coinche.utils import convert_cards_to_vector, convert_index_to_cards, decode_bid_action, encode_bid_action
 from coinche.exceptions import PlayException
-from coinche.card import Card, Suit
+from coinche.card import Card, Suit, Rank
 from coinche.trick import Trick
 
 class Player:
@@ -171,7 +171,6 @@ class DeterministicPlayer(RandomPlayer):
 
 class DeterministicPlayer_v2(RandomPlayer):
     def bid(self, obs, valid_bids, suits_order):
-        # count cards and honors
         suit_counts = {s: 0 for s in suits_order}
         has_jack = {s: False for s in suits_order}
         has_nine = {s: False for s in suits_order}
@@ -179,27 +178,28 @@ class DeterministicPlayer_v2(RandomPlayer):
         has_ten  = {s: False for s in suits_order}
         for c in self.cards:
             suit_counts[c.suit] += 1
-            if c.rank == Rank.JACK: has_jack[c.suit] = True
-            if c.rank == Rank.NINE: has_nine[c.suit] = True
-            if c.rank == Rank.ACE:  has_ace[c.suit]  = True
-            if c.rank == Rank.TEN:  has_ten[c.suit]  = True
+            if c.rank.name == "JACK": has_jack[c.suit] = True
+            if c.rank.name == "NINE": has_nine[c.suit] = True
+            if c.rank.name == "ACE":  has_ace[c.suit]  = True
+            if c.rank.name == "TEN":  has_ten[c.suit]  = True
 
-        # identify partner's and highest opponent's last suit bid
         last_partner = int(obs[35])
-        a, b = obs[34], obs[36]
-        last_max_opp = max(0 if a==43 else a, 0 if b==43 else b)
+        last_max_opponent_bid = int(max(
+            0 if obs[34] == 43 else obs[34],
+            0 if obs[36] == 43 else obs[36]
+        )) # ignore the padding bid, and take the largest opponent bid
 
         action = 0
         # Opening: partner hasn't bid, opponents <=80
-        if last_partner in (0,43) and last_max_opp in (0,1,2,3,4,43):
-            opp80 = last_max_opp in (1,2,3,4)
+        if last_partner in (0,43) and last_max_opponent_bid in (0,1,2,3,4,43):
+            opp80 = last_max_opponent_bid in (1,2,3,4)
             # strong handle: look for 110 first
             for s in suits_order:
                 if has_jack[s] and has_nine[s] and has_ace[s] and has_ten[s] and suit_counts[s]>=4:
                     val = 110 + (10 if opp80 else 0)
                     action = encode_bid_action(val, s)
                     break
-            else:
+            else: # if no 110, look for 90 or 80
                 # 90 fort
                 for s in suits_order:
                     if has_jack[s] and has_nine[s]:
@@ -215,12 +215,12 @@ class DeterministicPlayer_v2(RandomPlayer):
                             val = 80 + (10 if opp80 else 0)
                             action = encode_bid_action(val, s)
                             break
+        
         # Responding to partner's suit (80/90)
         elif last_partner in range(1,9):
             base, s = decode_bid_action(last_partner)
-            # highest opponent
-            opp = decode_bid_action(last_max_opp)
-            opp_val = opp[0] if isinstance(opp, tuple) else 0
+            opp = decode_bid_action(last_max_opponent_bid)
+            opp_val = opp[0] if isinstance(opp, tuple) else 0 # exclude pass, coinche, surcoinche
             add = 0
             if has_jack[s]: add += 20
             if has_nine[s]: add += 10
@@ -238,23 +238,44 @@ class DeterministicPlayer_v2(RandomPlayer):
         # gather legal plays
         legal = [c for c in self.cards if trick._assert_valid_play_TrueFalse(c, self)]
         if not legal:
-            raise PlayException("No valid cards to play - DeterministicPlayer")
+            raise PlayException("No valid cards to play - DeterministicPlayer_v2")
 
         # LEAD
         if trick.cards_in_trick == 0:
-            # draw trumps
-            trumps = [c for c in legal if c.suit == trick.atout_suit]
-            if trumps:
-                choice = max(trumps, key=lambda c: c.rank.value)
-            else:
-                # lead Ace of longest side suit
-                counts = {s: sum(1 for c in legal if c.suit==s) for s in suits_order}
-                side = max(counts, key=counts.get)
-                aces = [c for c in legal if c.suit==side and c.rank==Rank.ACE]
-                if aces:
-                    choice = aces[0]
+            if self.attacker:
+                # draw atouts
+                atouts = [c for c in legal if c.suit == trick.atout_suit]
+                if atouts:
+                    choice = max(atouts, key=lambda c: c.rank.value)
                 else:
-                    choice = max((c for c in legal if c.suit==side), key=lambda c: c.rank.value)
+                    # lead Ace of longest side suit or smallest card of shortest suit
+                    counts = {s: sum(1 for c in legal if (c.suit==s and s!=trick.atout_suit)) for s in suits_order}
+                    long_side = max(counts, key=counts.get)
+                    small_side = min(counts, key=counts.get)
+                    aces = [c for c in legal if c.suit == long_side and c.rank.name == "ACE"]
+                    side_cards = [c for c in legal if c.suit == small_side]
+                    if aces:
+                        choice = aces[0]
+                    elif side_cards:
+                        choice = min(side_cards, key=lambda c: c.rank.value)
+                    else:
+                        raise('No atout, no Ace, no side cards - Defender DeterministicPlayer_v2')
+                        # choice = min(legal, key=lambda c: c.rank.value)
+            else:
+                non_atouts = [c for c in legal if c.suit != trick.atout_suit]
+                if non_atouts:
+                    # lead either Ace of shortest suit or smallest card possible
+                    counts = {s: sum(1 for c in non_atouts if c.suit==s) for s in suits_order}
+                    small_side = min(counts, key=counts.get)
+                    aces = [c for c in non_atouts if c.suit == small_side and c.rank.name == "ACE"]
+                    if aces:
+                        choice = aces[0]
+                    else:
+                        choice = min(non_atouts, key=lambda c: c.rank.value)
+                else:
+                    # no non-atouts, play lowest atout card
+                    choice = min(legal, key=lambda c: c.rank.value)
+
         # FOLLOW
         else:
             # can we win this trick?
@@ -263,7 +284,7 @@ class DeterministicPlayer_v2(RandomPlayer):
                 # play minimal winner to keep control
                 choice = min(winners, key=lambda c: (c.suit!=trick.atout_suit, c.rank.value))
             else:
-                # duck: play lowest
+                # play lowest card of same suit
                 choice = min(legal, key=lambda c: (c.suit==trick.atout_suit, c.rank.value))
 
         trick.add_card(choice, self)
