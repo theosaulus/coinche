@@ -80,7 +80,9 @@ class GymCoinche(Env):
         self.round_number += 1
         self._rebuild_deck(self.played_tricks)
         for p in self.players:
-            p.attacker = False
+            p.has_belote = False
+            p.cards = []
+            p.attacker = None
             p.self_current_score = 0
             p.opponent_current_score = 0
         self._deal_cards()
@@ -216,7 +218,7 @@ class GymCoinche(Env):
 
             attacker_score = self.players[self.attacker_team].self_current_score
             defender_score = self.players[1 - self.attacker_team].self_current_score
-            
+
             contract = self.contract_value
             capot_announced = (contract == 250)
             capot_realized = sum(t.winner.index % 2 == self.attacker_team for t in self.played_tricks) == 8
@@ -379,7 +381,7 @@ class GymCoinche(Env):
         atout_code = -1.0 if self.atout_suit is None else float(self.atout_suit.value)
         phase = float(self.bidding_done)
         extra = np.array([
-            float(current_player.attacker), # 0/1
+            float(current_player_attacker), # 0/1
             contract_val, # 0–250
             atout_code, # -1 or 0–3
             float(self.coinche_surcoinche), # 0/1/2

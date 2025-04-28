@@ -251,7 +251,7 @@ class DeterministicPlayer_v2(RandomPlayer):
                     # lead Ace of longest side suit or smallest card of shortest suit
                     counts = {s: sum(1 for c in legal if (c.suit==s and s!=trick.atout_suit)) for s in suits_order}
                     long_side = max(counts, key=counts.get)
-                    small_side = min(counts, key=counts.get)
+                    small_side = min((s for s in counts if counts[s] > 0), key=counts.get)
                     aces = [c for c in legal if c.suit == long_side and c.rank.name == "ACE"]
                     side_cards = [c for c in legal if c.suit == small_side]
                     if aces:
@@ -266,7 +266,7 @@ class DeterministicPlayer_v2(RandomPlayer):
                 if non_atouts:
                     # lead either Ace of shortest suit or smallest card possible
                     counts = {s: sum(1 for c in non_atouts if c.suit==s) for s in suits_order}
-                    small_side = min(counts, key=counts.get)
+                    small_side = min((s for s in counts if counts[s] > 0), key=counts.get)
                     aces = [c for c in non_atouts if c.suit == small_side and c.rank.name == "ACE"]
                     if aces:
                         choice = aces[0]
