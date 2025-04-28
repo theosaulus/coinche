@@ -65,101 +65,125 @@ class GameReplayCallback(BaseCallback):
         return True
 
 class FinalScoreStatsCallback(BaseCallback):
-    def __init__(self, print_freq = 1000, log_in_wandb = True, verbose = 0):
+    """
+    Records per-episode rewards and key outcome flags for GymPlayers when they act as attacker or defender.
+    Periodically prints and optionally logs to Weights & Biases the aggregated statistics.
+    """
+    def __init__(self, print_freq=1000, log_in_wandb=True, verbose=0):
         super().__init__(verbose)
         self.print_freq = print_freq
         self.log_in_wandb = log_in_wandb
-        self._infos: list = []
+        # Buffers for attacker vs defender
+        self.atk_rewards = []
+        self.def_rewards = []
+        self.atk_success = []
+        self.def_success = []
+        self.atk_capot_ann = []
+        self.def_capot_ann = []
+        self.atk_capot_real = []
+        self.def_capot_real = []
+        self.atk_contr_val = []
+        self.def_contr_val = []
+        self.atk_contr_real = []
+        self.def_contr_real = []
+        self.atk_coinche_ann = []
+        self.def_coinche_ann = []
+        self.atk_coinche_real = []
+        self.def_coinche_real = []
+        self.atk_surcoin_ann = []
+        self.def_surcoin_ann = []
+        self.atk_surcoin_real = []
+        self.def_surcoin_real = []
 
     def _on_step(self) -> bool:
-        # In VecEnv contexts, `infos` is a list of dicts, one per env
         infos = self.locals.get("infos", [])
         dones = self.locals.get("dones", [])
-        for info, done in zip(infos, dones):
-            if done and "total_attacker_points" in info:
-                self._infos.append(info)
+        rewards = self.locals.get("rewards", [])
+        for info, done, rew in zip(infos, dones, rewards):
+            if done and "gymplayer_attacker_yn" in info:
+                is_atk = bool(info["gymplayer_attacker_yn"])
+                # reward
+                (self.atk_rewards if is_atk else self.def_rewards).append(rew)
+                # contract realized success
+                if is_atk:
+                    self.atk_success.append(bool(info.get("contract_realized", False)))
+                else:
+                    self.def_success.append(1 - bool(info.get("contract_realized", False)))
+                # capot
+                ann = bool(info.get("capot_announced", False))
+                real = bool(info.get("capot_realized", False))
+                (self.atk_capot_ann if is_atk else self.def_capot_ann).append(ann)
+                (self.atk_capot_real if is_atk else self.def_capot_real).append(real)
+                # contract value & realized
+                val = float(info.get("contract_value", 0))
+                (self.atk_contr_val if is_atk else self.def_contr_val).append(val)
+                (self.atk_contr_real if is_atk else self.def_contr_real).append(bool(info.get("contract_realized", False)))
+                # coinche / surcoinche
+                coin = info.get("coinche_surcoinche", 0)
+                ann_c = (coin == 1)
+                real_c = ann_c and not info.get("contract_realized", False)
+                (self.atk_coinche_ann if is_atk else self.def_coinche_ann).append(ann_c)
+                (self.atk_coinche_real if is_atk else self.def_coinche_real).append(real_c)
+                # surcoinche
+                ann_s = (coin == 2)
+                real_s = ann_s and not info.get("contract_realized", False)
+                (self.atk_surcoin_ann if is_atk else self.def_surcoin_ann).append(ann_s)
+                (self.atk_surcoin_real if is_atk else self.def_surcoin_real).append(real_s)
 
-        # Periodically print & reset
-        if self.n_calls % self.print_freq == 0 and self._infos:
-            self._log_to_wandb(self.log_in_wandb)
-            self._infos.clear()
+        # print & optionally log
+        if self.n_calls % self.print_freq == 0 and (self.atk_rewards or self.def_rewards):
+            print(f"\n=== Performance over {len(self.atk_rewards)+len(self.def_rewards)} episodes ===")
+            metrics = {}
+            def summarize(prefix, buf):
+                if buf:
+                    mean = np.mean(buf)
+                    count = len(buf)
+                    print(f" {prefix}: {mean:.3f} ({count})")
+                    metrics[f"{prefix}"] = float(mean)
+
+            # rewards
+            summarize("As attacker reward_mean", self.atk_rewards)
+            summarize("As defender reward_mean", self.def_rewards)
+            # success
+            summarize("As attacker success_rate", self.atk_success)
+            summarize("As defender success_rate", self.def_success)
+            # capot
+            summarize("Capot announce rate", self.atk_capot_ann)
+            summarize("Capot realisation rate", self.atk_capot_real)
+            summarize("Opponent capot announce rate", self.def_capot_ann)
+            summarize("Opponent capot realisation rate", self.def_capot_real)
+            # contract value & realized
+            summarize("Contract value mean", self.atk_contr_val)
+            summarize("Opponent contract value mean", self.def_contr_val)
+            summarize("Contract realisation rate", self.atk_contr_real)
+            summarize("Opponent contract realisation rate", self.def_contr_real)
+            # coinche
+            summarize("Coinche announce rate", self.atk_coinche_ann)
+            summarize("Coinche win rate", self.atk_coinche_real)
+            summarize("Opponent coinche announce rate", self.def_coinche_ann)
+            summarize("Opponent coinche win rate", self.def_coinche_real)
+            # surcoinche
+            summarize("Surcoinche announce rate", self.atk_surcoin_ann)
+            summarize("Surcoinche win rate", self.atk_surcoin_real)
+            summarize("Opponent surcoinche announce rate", self.def_surcoin_ann)
+            summarize("Opponent surcoinche win rate", self.def_surcoin_real)
+            print()
+
+            if self.log_in_wandb:
+                wandb.define_metric("*")
+                wandb.log(metrics)
+
+            # clear all
+            for buf in [self.atk_rewards, self.def_rewards,
+                        self.atk_success, self.def_success,
+                        self.atk_capot_ann, self.def_capot_ann,
+                        self.atk_capot_real, self.def_capot_real,
+                        self.atk_contr_val, self.def_contr_val,
+                        self.atk_contr_real, self.def_contr_real,
+                        self.atk_coinche_ann, self.def_coinche_ann,
+                        self.atk_coinche_real, self.def_coinche_real,
+                        self.atk_surcoin_ann, self.def_surcoin_ann,
+                        self.atk_surcoin_real, self.def_surcoin_real]:
+                buf.clear()
+
         return True
-    
-    def _log_to_wandb(self, log_in_wandb):
-        arr = self._infos
-        gym_atk_yn = np.array([i["gymplayer_attacker_yn"] for i in arr])
-        atk_pts   = np.array([i["total_attacker_points"] for i in arr])
-        def_pts   = np.array([i["total_defender_points"] for i in arr])
-        succ      = np.array([i["contract_realized"] for i in arr], dtype=float)
-        cap_ann   = np.array([i["capot_announced"] for i in arr], dtype=float)
-        cap_succ  = np.array([i["capot_realized"] for i in arr], dtype=float)
-        belote    = np.array([i["belote"] for i in arr], dtype=float)
-        contr_val = np.array([i["contract_value"] for i in arr], dtype=float)
-        coinche   = np.array([i.get("coinche_surcoinche", 0)==1 for i in arr], dtype=float)
-        surcoin   = np.array([i.get("coinche_surcoinche", 0)==2 for i in arr], dtype=float)
-
-        atk_pts_gym_true   = atk_pts[gym_atk_yn]
-        def_pts_gym_true   = def_pts[gym_atk_yn]
-        succ_gym_true      = succ[gym_atk_yn]
-        cap_ann_gym_true   = cap_ann[gym_atk_yn]
-        cap_succ_gym_true  = cap_succ[gym_atk_yn]
-        contr_val_gym_true = contr_val[gym_atk_yn]
-        coinche_gym_true   = coinche[gym_atk_yn]
-        surcoin_gym_true   = surcoin[gym_atk_yn]
-
-        atk_pts_gym_false   = atk_pts[~gym_atk_yn]
-        def_pts_gym_false   = def_pts[~gym_atk_yn]
-        succ_gym_false      = succ[~gym_atk_yn]
-        cap_ann_gym_false   = cap_ann[~gym_atk_yn]
-        cap_succ_gym_false  = cap_succ[~gym_atk_yn]
-        contr_val_gym_false = contr_val[~gym_atk_yn]
-        coinche_gym_false   = coinche[~gym_atk_yn]
-        surcoin_gym_false   = surcoin[~gym_atk_yn]
-        
-        print(f"\n=== Final‐Score Stats over {len(arr)} episodes ===")
-        # print(f"Overall:")
-        # print(f" Attacker pts: {atk_pts.mean():.1f}  Defender pts: {def_pts.mean():.1f}")
-        # print(f" Success rate       : {succ.mean()*100:.1f}%")
-        # print(f" Contract value avg : {contr_val.mean():.1f}")
-        # print(f" Capot ann/succ     : {cap_ann.mean()*100:.1f}% / {cap_succ.mean()*100:.1f}%")
-        # print(f" Coinche / Surcoin.: {coinche.mean()*100:.1f}% / {surcoin.mean()*100:.1f}%\n")
-
-        print(f"Gym player attacker (True):")
-        print(f" Attacker pts: {atk_pts_gym_true.mean():.1f}  Defender pts: {def_pts_gym_true.mean():.1f}")
-        print(f" Success rate       : {succ_gym_true.mean()*100:.1f}%")
-        print(f" Contract value avg : {contr_val_gym_true.mean():.1f}")
-        print(f" Capot ann/succ     : {cap_ann_gym_true.mean()*100:.1f}% / {cap_succ_gym_true.mean()*100:.1f}%")
-        print(f" Coinche / Surcoin.: {coinche_gym_true.mean()*100:.1f}% / {surcoin_gym_true.mean()*100:.1f}%\n")
-
-        print(f"Gym player defender:")
-        print(f" Attacker pts: {atk_pts_gym_false.mean():.1f}  Defender pts: {def_pts_gym_false.mean():.1f}")
-        print(f" Success rate       : {succ_gym_false.mean()*100:.1f}%")
-        print(f" Contract value avg : {contr_val_gym_false.mean():.1f}")
-        print(f" Capot ann/succ     : {cap_ann_gym_false.mean()*100:.1f}% / {cap_succ_gym_false.mean()*100:.1f}%")
-        print(f" Coinche / Surcoin.: {coinche_gym_false.mean()*100:.1f}% / {surcoin_gym_false.mean()*100:.1f}%\n")
-
-        metrics = {
-            "final/attacker_pts_mean_gym_true":      atk_pts_gym_true.mean(),
-            "final/defender_pts_mean_gym_true":      def_pts_gym_true.mean(),
-            "final/contract_success_rate_gym_true":  succ_gym_true.mean(),
-            "final/contract_value_mean_gym_true":    contr_val_gym_true.mean(),
-            "final/capot_announced_rate_gym_true":   cap_ann_gym_true.mean(),
-            "final/capot_success_rate_gym_true":     cap_succ_gym_true.mean(),
-            "final/coinche_rate_gym_true":           coinche_gym_true.mean(),
-            "final/surcoinche_rate_gym_true":        surcoin_gym_true.mean(),
-            "final/attacker_pts_mean_gym_false":     atk_pts_gym_false.mean(),
-            "final/defender_pts_mean_gym_false":     def_pts_gym_false.mean(),
-            "final/contract_success_rate_gym_false": succ_gym_false.mean(),
-            "final/contract_value_mean_gym_false":   contr_val_gym_false.mean(),
-            "final/capot_announced_rate_gym_false":  cap_ann_gym_false.mean(),
-            "final/capot_success_rate_gym_false":    cap_succ_gym_false.mean(),
-            "final/coinche_rate_gym_false":          coinche_gym_false.mean(),
-            "final/surcoinche_rate_gym_false":       surcoin_gym_false.mean(),
-        }
-        # use the number of timesteps as the step for plotting
-        if log_in_wandb:
-            wandb.define_metric("final/*", step_metric="global_step")
-            metrics["global_step"] = self.num_timesteps
-            wandb.log(metrics)
-            if self.verbose:
-                print(f"[W&B] logged final‐score metrics at step {self.num_timesteps}")
