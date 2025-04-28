@@ -246,6 +246,7 @@ class GymCoinche(Env):
             info["contract_value"] = contract
             info["contract_realized"] = attacker_score >= contract
             info["belote"] = belote_bonus > 0
+            info["coinche_surcoinche"] = self.coinche_surcoinche
 
             info["attacker_score_raw"] = attacker_score
             info["defender_score_raw"] = 162 - attacker_score
@@ -427,17 +428,27 @@ class GymCoinche(Env):
 
     def _get_valid_bid_actions(self, current_bid):
         if current_bid is None:
-            return list(range(1, 41)) + [0]  # all bids except coinche/surcoinche + pass
-        elif self.coinche_surcoinche == 1:
-            return [42, 0] # surcoinche + pass
+            return list(range(1, 41)) + [0] # all bids except coinche/surcoinche + pass
+        is_partner = self.bid_winning_player.index % 2 == self.current_bidding_player_index % 2
+        if self.coinche_surcoinche == 1:
+            # already coinched: only the bidder's team can surcoinche
+            valid = [0]
+            valid += [42] if is_partner else [] # surcoinche (if bet was done by the team (coinched by opponents))
+            return valid 
         elif self.coinche_surcoinche == 2:
+            # already surcoinched: only pass is allowed
             return [0]
         elif current_bid[0] == 250:
-            return [41, 0]  # pass + coinche
+            # capot: coinche is allowed on the opposing team
+            valid = [0]
+            valid += [41] if not is_partner else [] # coinche (if bet was done by the opponents
+            return valid
         else:
             min_bid_value = current_bid[0] + 10
             min_action_index = 1 + 4 * ((min_bid_value - 80) // 10)
-            return list(range(min_action_index, 42)) + [0]  # all possible bids except surcoinche + pass
+            valid = list(range(min_action_index, 41)) + [0]  # all possible bids except coinche/surcoinche + pass
+            valid += [41] if not is_partner else [] # coinche (except on partner)
+            return valid
     
     def _get_valid_trick_actions(self, trick):
         valid_actions = []
