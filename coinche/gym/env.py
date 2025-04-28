@@ -252,6 +252,7 @@ class GymCoinche(Env):
 
             info["total_attacker_points"] = attacker_points
             info["total_defender_points"] = defender_points
+            info["gymplayer_attacker_yn"] =  1 - self.attacker_team
 
             terminated = True
             # Assuming that GymPlayer(s) are position 0 and 2

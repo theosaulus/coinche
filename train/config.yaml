@@ -6,15 +6,16 @@ policy: MlpPolicy
 env_id: coinche-v6
 total_timesteps: 1_000_000
 
-log_every: 1_000
-checkpoint_every: 1_000      # Save model every N steps
+log_every: 500
+checkpoint_every: 2_000      # Save model every N steps
 eval_every: 1_000          # (Optional) evaluate agent every N steps
-gradient_save_freq: 1_000     # (Optional) save gradient every N steps (0 is never)
+gradient_save_freq: 2_000     # (Optional) save gradient every N steps (0 is never)
 
 log_game_metrics: true      # Log contract, suit, etc.
 save_game_replays: true     # Save replays for analysis
+print_score_stats: true
 
-num_envs: 8
-n_steps: 512
+num_envs: 32
+n_steps: 256
 batch_size: 512
 n_epochs: 10
