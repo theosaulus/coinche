@@ -123,15 +123,15 @@ class GymCoinche(Env):
 
         if self.current_bid is None and len(self.bids) >= 4:
             # Everyone passed without bid: end of the round, bad reward to everyone
-            self.bidding_done = True
             obs = self._get_current_observation()
             reward = -10
             info = self.original_hands
             info["total_reward"] = -10
             terminated = True
+            self.bidding_done = True
             return obs, reward, terminated, False, info
 
-        elif (self.current_bid is not None and self.passes_in_row >= 3) or self.coinche_surcoinche:
+        elif (self.current_bid is not None and self.passes_in_row >= 3) or (self.coinche_surcoinche == 2):
             self.bidding_done = True
             self.contract_value, self.atout_suit = self.current_bid
             self.attacker_team = self.bid_winning_player.index % 2
@@ -242,8 +242,17 @@ class GymCoinche(Env):
             else:
                 defender_points = 160 * multiplier
 
+            # give symmetric rewards to give signal
+            if defender_points == 0:
+                reward_defender_points = - attacker_points
+                reward_attacker_points = attacker_points
+            else:
+                reward_defender_points = defender_points
+                reward_attacker_points = - contract # give a sense to bid lower
+
             belote_bonus = 20 if any(p.has_belote for p in self.players if p.attacker) else 0
             attacker_points += belote_bonus
+            reward_attacker_points += belote_bonus
 
             info["capot_realized"] = capot_realized
             info["capot_announced"] = capot_announced
@@ -261,7 +270,7 @@ class GymCoinche(Env):
 
             terminated = True
             # Assuming that GymPlayer(s) are position 0 and 2
-            reward = attacker_points if not self.attacker_team else defender_points
+            reward = reward_attacker_points if not self.attacker_team else reward_defender_points
             if self.linear_reward_increase:
                 weight = min(1, max(0, (self.round_number - self.final_reward_linear[0]) / self.final_reward_linear[1]))
                 reward = reward * weight
@@ -271,6 +280,7 @@ class GymCoinche(Env):
     def _init_bidding_phase(self):
         self.bids = []
         self.current_bid = None
+        self.suits_order = None
         self.bid_winning_player = None
         self.passes_in_row = 0
         self.current_bidding_player_index = (self.dealer_index + 1) % 4
@@ -363,7 +373,11 @@ class GymCoinche(Env):
             played_cards = [card for trick in self.played_tricks for card in trick.cards]
             current_player = self.current_trick_rotation[0]
             suits_order = self.suits_order
+
+            if current_player.attacker is None: # probably a bug, it only happened once...
+                current_player_attacker = 2 
             current_player_attacker = current_player.attacker
+            
             trick_cards_observation = convert_cards_to_vector(self.trick.cards, suits_order)
 
         bids = [PAD_ACTION] * (self.bidding_history_length - len(self.bids)) + self.bids

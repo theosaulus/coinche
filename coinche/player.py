@@ -17,7 +17,7 @@ class Player:
         self.index = index
         self.name = name
         self.cards = []
-        self.attacker = None
+        self.attacker = None # True if the player is the attacker
         self.has_belote = False
         self.self_current_score = 0
         self.opponent_current_score = 0
