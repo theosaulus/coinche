@@ -433,7 +433,7 @@ class GymCoinche(Env):
         if self.coinche_surcoinche == 1:
             # already coinched: only the bidder's team can surcoinche
             valid = [0]
-            valid += [42] if is_partner else [] # surcoinche (if bet was done by the team (coinched by opponents))
+            valid += [42] if not is_partner else [] # surcoinche (if bet was done by the team (coinched by opponents))
             return valid 
         elif self.coinche_surcoinche == 2:
             # already surcoinched: only pass is allowed
