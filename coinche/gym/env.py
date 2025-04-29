@@ -46,8 +46,12 @@ class GymCoinche(Env):
         ]
         
         self.tricks_reward_factor = 0.1
-        self.final_reward_linear = [100, 4000]
+        self.final_reward_linear = [1, 300]
         self.linear_reward_increase = False
+
+        self.curriculum_bounds = [0, 20000, 20000]
+        self.curriculum_masking = True
+
         self.deck = Deck()
         self.round_number = 0
         self.reshuffle_deck_each_round = True
@@ -248,7 +252,7 @@ class GymCoinche(Env):
                 reward_attacker_points = attacker_points
             else:
                 reward_defender_points = defender_points
-                reward_attacker_points = - contract # give a sense to bid lower
+                reward_attacker_points = - contract * multiplier # give a sense to bid lower
 
             belote_bonus = 20 if any(p.has_belote for p in self.players if p.attacker) else 0
             attacker_points += belote_bonus
@@ -377,7 +381,7 @@ class GymCoinche(Env):
             if current_player.attacker is None: # probably a bug, it only happened once...
                 current_player_attacker = 2 
             current_player_attacker = current_player.attacker
-            
+
             trick_cards_observation = convert_cards_to_vector(self.trick.cards, suits_order)
 
         bids = [PAD_ACTION] * (self.bidding_history_length - len(self.bids)) + self.bids
@@ -445,28 +449,40 @@ class GymCoinche(Env):
         ], axis=0)
 
     def _get_valid_bid_actions(self, current_bid):
+        def _curriculum(val):
+            if self.curriculum_masking:
+                if self.round_number < self.curriculum_bounds[0]:
+                    val = [action for action in val if action <= 4]
+                if self.round_number < self.curriculum_bounds[1]:
+                    val = [action for action in val if action <= 12]
+                if self.round_number < self.curriculum_bounds[2]:
+                    val = [action for action in val if action <= 24]
+            return val
+
         if current_bid is None:
-            return list(range(1, 41)) + [0] # all bids except coinche/surcoinche + pass
+            valid = list(range(1, 41)) + [0] # all bids except coinche/surcoinche + pass
+            return _curriculum(valid)
         is_partner = self.bid_winning_player.index % 2 == self.current_bidding_player_index % 2
         if self.coinche_surcoinche == 1:
             # already coinched: only the bidder's team can surcoinche
             valid = [0]
             valid += [42] if not is_partner else [] # surcoinche (if bet was done by the team (coinched by opponents))
-            return valid 
+            return _curriculum(valid)
         elif self.coinche_surcoinche == 2:
             # already surcoinched: only pass is allowed
-            return [0]
+            valid = [0]
+            return _curriculum(valid)
         elif current_bid[0] == 250:
             # capot: coinche is allowed on the opposing team
             valid = [0]
             valid += [41] if not is_partner else [] # coinche (if bet was done by the opponents
-            return valid
+            return _curriculum(valid)
         else:
             min_bid_value = current_bid[0] + 10
             min_action_index = 1 + 4 * ((min_bid_value - 80) // 10)
             valid = list(range(min_action_index, 41)) + [0]  # all possible bids except coinche/surcoinche + pass
             valid += [41] if not is_partner else [] # coinche (except on partner)
-            return valid
+            return _curriculum(valid)
     
     def _get_valid_trick_actions(self, trick):
         valid_actions = []
