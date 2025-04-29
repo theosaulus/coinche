@@ -32,3 +32,12 @@ class GymPlayer(Player):
         action = self.next_action
         self.next_action = None
         return action
+    
+    def clone(self): 
+        new_player = GymPlayer(index = self.index, name = self.name)
+        new_player.cards = [card for card in self.cards]
+        new_player.attacker = self.attacker
+        new_player.has_belote = self.has_belote
+        new_player.self_current_score = self.self_current_score
+        new_player.opponent_current_score = self.opponent_current_score
+        return new_player

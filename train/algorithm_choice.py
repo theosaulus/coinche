@@ -51,7 +51,7 @@ def get_algorithm(config, env):
         #     )
         return ppo
     elif algo == "DCFR": 
-        return DeepCFRWrapper(config, env)
+        return DeepCFRWrapper(config)
 
     elif algo == "OCFR": #DO Deep CFR
         #game = pyspiel.load_game("coinche")

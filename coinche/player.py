@@ -37,6 +37,18 @@ class Player:
     def remove_card(self, card):
         self.cards.remove(card)   
 
+    def clone(self):
+        """
+        Create a deep copy of the player instance.
+        """
+        new_player = Player(self.index, self.name)
+        new_player.cards = [card for card in self.cards]
+        new_player.attacker = self.attacker
+        new_player.has_belote = self.has_belote
+        new_player.self_current_score = self.self_current_score
+        new_player.opponent_current_score = self.opponent_current_score
+        return new_player
+
     @abstractmethod
     def bid(
         self,
@@ -86,6 +98,18 @@ class RandomPlayer(Player):
         card = random.choice(legal_cards)
         trick.add_card(card, self)
         self.remove_card(card)
+    
+    def clone(self):
+        """
+        Create a deep copy of the player instance.
+        """
+        new_player = RandomPlayer(self.index, self.name)
+        new_player.cards = self.cards.copy()
+        new_player.attacker = self.attacker
+        new_player.has_belote = self.has_belote
+        new_player.self_current_score = self.self_current_score
+        new_player.opponent_current_score = self.opponent_current_score
+        return new_player
 
 class DeterministicPlayer(RandomPlayer):
     def bid(self, obs, valid_bids, suits_order):
@@ -164,6 +188,154 @@ class DeterministicPlayer(RandomPlayer):
 
         trick.add_card(card, self)
         self.remove_card(card)
+
+    def clone(self):
+        """
+        Create a deep copy of the player instance.
+        """
+        new_player = DeterministicPlayer(self.index, self.name)
+        new_player.cards = self.cards.copy()
+        new_player.attacker = self.attacker
+        new_player.has_belote = self.has_belote
+        new_player.self_current_score = self.self_current_score
+        new_player.opponent_current_score = self.opponent_current_score
+        return new_player
+
+class DeterministicPlayer_v2(RandomPlayer):
+    def bid(self, obs, valid_bids, suits_order):
+        suit_counts = {s: 0 for s in suits_order}
+        has_jack = {s: False for s in suits_order}
+        has_nine = {s: False for s in suits_order}
+        has_ace  = {s: False for s in suits_order}
+        has_ten  = {s: False for s in suits_order}
+        for c in self.cards:
+            suit_counts[c.suit] += 1
+            if c.rank.name == "JACK": has_jack[c.suit] = True
+            if c.rank.name == "NINE": has_nine[c.suit] = True
+            if c.rank.name == "ACE":  has_ace[c.suit]  = True
+            if c.rank.name == "TEN":  has_ten[c.suit]  = True
+
+        last_partner = int(obs[35])
+        last_max_opponent_bid = int(max(
+            0 if obs[34] == 43 else obs[34],
+            0 if obs[36] == 43 else obs[36]
+        )) # ignore the padding bid, and take the largest opponent bid
+
+        action = 0
+        # Opening: partner hasn't bid, opponents <=80
+        if last_partner in (0,43) and last_max_opponent_bid in (0,1,2,3,4,43):
+            opp80 = last_max_opponent_bid in (1,2,3,4)
+            # strong handle: look for 110 first
+            for s in suits_order:
+                if has_jack[s] and has_nine[s] and has_ace[s] and has_ten[s] and suit_counts[s]>=4:
+                    val = 110 + (10 if opp80 else 0)
+                    action = encode_bid_action(val, s)
+                    break
+            else: # if no 110, look for 90 or 80
+                # 90 fort
+                for s in suits_order:
+                    if has_jack[s] and has_nine[s]:
+                        val = 90 + (10 if opp80 else 0)
+                        action = encode_bid_action(val, s)
+                        break
+                # 80 opening if not 90
+                if action==0:
+                    for s in suits_order:
+                        j,n,c = has_jack[s], has_nine[s], suit_counts[s]
+                        ace_else = any(has_ace[x] for x in suits_order if x!=s)
+                        if (j or n) and (c>=2 or (c>=1 and ace_else)):
+                            val = 80 + (10 if opp80 else 0)
+                            action = encode_bid_action(val, s)
+                            break
+        
+        # Responding to partner's suit (80/90)
+        elif last_partner in range(1,9):
+            base, s = decode_bid_action(last_partner)
+            opp = decode_bid_action(last_max_opponent_bid)
+            opp_val = opp[0] if isinstance(opp, tuple) else 0 # exclude pass, coinche, surcoinche
+            add = 0
+            if has_jack[s]: add += 20
+            if has_nine[s]: add += 10
+            # count outside aces
+            add += 10 * sum(1 for x in suits_order if x!=s and has_ace[x])
+            # penalize singleton
+            if suit_counts[s] <= 1:
+                add -= 10
+            new_val = base + add
+            if new_val > base and new_val > opp_val:
+                action = encode_bid_action(new_val, s)
+        return action if action in valid_bids else 0
+
+    def play_trick(self, trick, obs, suits_order):
+        # gather legal plays
+        legal = [c for c in self.cards if trick._assert_valid_play_TrueFalse(c, self)]
+        if not legal:
+            raise PlayException("No valid cards to play - DeterministicPlayer_v2")
+
+        # LEAD
+        if trick.cards_in_trick == 0:
+            if self.attacker:
+                # draw atouts
+                atouts = [c for c in legal if c.suit == trick.atout_suit]
+                if atouts:
+                    choice = max(atouts, key=lambda c: c.rank.value)
+                else:
+                    # lead Ace of longest side suit or smallest card of shortest suit
+                    counts = {s: sum(1 for c in legal if (c.suit==s and s!=trick.atout_suit)) for s in suits_order}
+                    long_side = max(counts, key=counts.get)
+                    small_side = min(counts, key=counts.get)
+                    aces = [c for c in legal if c.suit == long_side and c.rank.name == "ACE"]
+                    side_cards = [c for c in legal if c.suit == small_side]
+                    if aces:
+                        choice = aces[0]
+                    elif side_cards:
+                        choice = min(side_cards, key=lambda c: c.rank.value)
+                    else:
+                        raise('No atout, no Ace, no side cards - Defender DeterministicPlayer_v2')
+                        # choice = min(legal, key=lambda c: c.rank.value)
+            else:
+                non_atouts = [c for c in legal if c.suit != trick.atout_suit]
+                if non_atouts:
+                    # lead either Ace of shortest suit or smallest card possible
+                    counts = {s: sum(1 for c in non_atouts if c.suit==s) for s in suits_order}
+                    small_side = min(counts, key=counts.get)
+                    aces = [c for c in non_atouts if c.suit == small_side and c.rank.name == "ACE"]
+                    if aces:
+                        choice = aces[0]
+                    else:
+                        choice = min(non_atouts, key=lambda c: c.rank.value)
+                else:
+                    # no non-atouts, play lowest atout card
+                    choice = min(legal, key=lambda c: c.rank.value)
+
+        # FOLLOW
+        else:
+            # can we win this trick?
+            winners = [c for c in legal if trick.is_player_card_higher_than_highest(c)]
+            if winners:
+                # play minimal winner to keep control
+                choice = min(winners, key=lambda c: (c.suit!=trick.atout_suit, c.rank.value))
+            else:
+                # play lowest card of same suit
+                choice = min(legal, key=lambda c: (c.suit==trick.atout_suit, c.rank.value))
+
+        trick.add_card(choice, self)
+        self.remove_card(choice)
+
+    def clone(self):
+        """
+        Create a deep copy of the player instance.
+        """
+        new_player = DeterministicPlayer_v2(self.index, self.name)
+        new_player.cards = self.cards.copy()
+        new_player.attacker = self.attacker
+        new_player.has_belote = self.has_belote
+        new_player.self_current_score = self.self_current_score
+        new_player.opponent_current_score = self.opponent_current_score
+        return new_player
+
+
+
 
 
 class SharedPolicy(nn.Module):

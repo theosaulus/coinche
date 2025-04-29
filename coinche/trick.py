@@ -1,6 +1,6 @@
-from coinche.card import Rank
+from coinche.card import Card, Rank, Suit
 from coinche.exceptions import MustPlayHigherAtout, MustPlayACard, MustPlayCurrentSuit, MustPlayAtout, MustPlayHisCards
-
+import copy
 
 class Trick:
     def __init__(self, atout_suit, trick_number):
@@ -137,6 +137,19 @@ class Trick:
 
     def is_done(self):
         return self.cards_in_trick >= 4
+    
+
+    def clone(self):
+        new_trick = Trick(self.atout_suit, self.trick_number)
+        new_trick.cards = [card for card in self.cards]
+        new_trick.suit = Suit(self.suit.value) if self.suit is not None else None
+        new_trick.cards_in_trick = copy.deepcopy(self.cards_in_trick)
+        new_trick.winner = copy.deepcopy(self.winner)
+        new_trick.highest_card = Card(Rank(self.highest_card.rank.value), Suit(self.highest_card.suit.value)) if self.highest_card is not None else None
+        return new_trick
+    
+
+
 
 
 _GENERIC_VALUES = dict(

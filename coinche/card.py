@@ -43,6 +43,9 @@ class Card:
         card_rank = (card_index % 8)
         card_suit = card_index // 8
         return Card(Rank(card_rank), Suit(suits_order[int(card_suit)]))
+    
+    '''def clone(self):
+        return Card(Rank(self.rank.value), Suit(self.suit.value))'''
 
 
 class Suit(Enum):
@@ -62,6 +65,12 @@ class Suit(Enum):
                 break
             suits_order = np.roll(suits_order, 1)
         return suits_order.tolist()
+    
+    def __lt__(self, other):
+        if isinstance(other, Suit):
+            return self.value < other.value
+        return NotImplemented
+    
 
 
 class Rank(Enum):

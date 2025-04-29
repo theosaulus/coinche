@@ -86,7 +86,9 @@ class GymCoinche(Env):
         self.round_number += 1
         self._rebuild_deck(self.played_tricks)
         for p in self.players:
-            p.attacker = False
+            p.cards = []
+            p.has_belote = False
+            p.attacker = None
             p.self_current_score = 0
             p.opponent_current_score = 0
         self._deal_cards()
@@ -114,6 +116,7 @@ class GymCoinche(Env):
         info = {}
         player = self.players[self.current_bidding_player_index]
         if not isinstance(player, GymPlayer):
+            #print(player, flush=True)
             raise RuntimeError("Not GymPlayer's turn to bid")
 
         valid_bids = self._get_valid_bid_actions(self.current_bid)
@@ -171,6 +174,7 @@ class GymCoinche(Env):
         info = {}
         player = self.current_trick_rotation[0]
         if not isinstance(player, GymPlayer):
+            #print(player, flush=True)
             raise RuntimeError("Not GymPlayer's turn to play")
         
         valid_actions = self._get_valid_trick_actions(self.trick)
@@ -390,17 +394,14 @@ class GymCoinche(Env):
         bidding_history_observation = np.array(bids)
         played_cards_observation = convert_cards_to_vector(played_cards, suits_order)
         player_cards_observation = convert_cards_to_vector(current_player.cards, suits_order)
-        current_scores = np.array([
-            current_player.self_current_score,
-            current_player.opponent_current_score 
-        ])
+        current_scores = np.array([current_player.self_current_score, current_player.opponent_current_score])
 
         # guardrails for None
         contract_val = 0.0 if self.contract_value is None else float(self.contract_value)
         atout_code = -1.0 if self.atout_suit is None else float(self.atout_suit.value)
         phase = float(self.bidding_done)
         extra = np.array([
-            float(current_player.attacker), # 0/1
+            float(current_player_attacker), # 0/1
             contract_val, # 0–250
             atout_code, # -1 or 0–3
             float(self.coinche_surcoinche), # 0/1/2
@@ -449,7 +450,32 @@ class GymCoinche(Env):
             extra.astype(np.float32)
         ], axis=0)
 
+    
     def _get_valid_bid_actions(self, current_bid):
+        if current_bid is None:
+            return list(range(1, 41)) + [0] # all bids except coinche/surcoinche + pass
+        is_partner = self.bid_winning_player.index % 2 == self.current_bidding_player_index % 2
+        if self.coinche_surcoinche == 1:
+            # already coinched: only the bidder's team can surcoinche
+            valid = [0]
+            valid += [42] if not is_partner else [] # surcoinche (if bet was done by the team (coinched by opponents))
+            return valid 
+        elif self.coinche_surcoinche == 2:
+            # already surcoinched: only pass is allowed
+            return [0]
+        elif current_bid[0] == 250:
+            # capot: coinche is allowed on the opposing team
+            valid = [0]
+            valid += [41] if not is_partner else [] # coinche (if bet was done by the opponents
+            return valid
+        else:
+            min_bid_value = current_bid[0] + 10
+            min_action_index = 1 + 4 * ((min_bid_value - 80) // 10)
+            valid = [0] + list(range(min_action_index, 41))  # all possible bids except coinche/surcoinche + pass
+            valid += [41] if not is_partner else [] # coinche (except on partner)
+            return valid
+        
+    def old_get_valid_bid_actions(self, current_bid):
         if current_bid is None:
             return list(range(1, 41)) + [0]  # all bids except coinche/surcoinche + pass 
             # list(range(1, 37)) + [0]  #
@@ -467,7 +493,10 @@ class GymCoinche(Env):
 
     def _get_valid_trick_actions(self, trick):
         valid_actions = []
+        #print("Cards: ", [(card.rank, card.suit) for card in self.current_trick_rotation[0].cards])
+        #print("Len of cards: ", len(self.current_trick_rotation[0].cards))
         for card in self.current_trick_rotation[0].cards:
+            
             if trick._assert_valid_play_TrueFalse(card, self.current_trick_rotation[0]):
                 valid_actions.append(card.to_index(self.suits_order))
         return valid_actions
@@ -496,14 +525,14 @@ class GymCoinche(Env):
         return score * trick_score_factor
     
     def _get_return(self):
+        reward = np.array([-1.0, -1.0,-1.0, -1.0,])#np.array([0.0, 0.0, 0.0, 0.0])
         if not self.bidding_done:
-            return np.zeros((4))
+            return reward
         elif len(self.played_tricks) < 8:
-            return np.zeros((4))
+            return reward
         else:
-            reward = np.array([0.0, 0.0, 0.0, 0.0])
             if not self.played_tricks:
-                return np.ones((4))*-10.0
+                return reward#np.array([-1.0, -1.0,-1.0, -1.0,])
             
             #attacking = 0 if index even and 1 if odd
 
@@ -522,16 +551,30 @@ class GymCoinche(Env):
             attacker_points = 0
             defender_points = 0
 
+            #print("attackers: ", self.attacker_team)
             if capot_announced:
+                #("capot announced")
                 if capot_realized:
+                    #print("capot realized")
                     attacker_points = 250 * multiplier
                 else:
+                    #print("capot not realized")
                     defender_points = 250 * multiplier
             elif attacker_score >= contract:
+                #print("attacker score >= contract")
                 attacker_points = contract * multiplier
             else:
+                #print("attacker score < contract")
                 defender_points = 160 * multiplier
 
+            
+            #made 0 sum to give more informative reward about opponents.
+            if defender_points == 0:
+                defender_points = -1*attacker_points
+            if attacker_points == 0:
+                attacker_points = -1*defender_points
+
+            
             belote_bonus = 20 if any(p.has_belote for p in self.players if p.attacker) else 0
             attacker_points += belote_bonus
 
@@ -540,22 +583,46 @@ class GymCoinche(Env):
             ], dtype=np.float32)
             return reward
     
-    def __deepcopy__(self, memo):
-        """
-        Create a true deep copy of this GymCoinche instance.
-        """
-        # Create a new, uninitialized instance
-        cls = self.__class__
-        new_env = cls.__new__(cls)
-        # Track in memo to handle recursive references
-        memo[id(self)] = new_env
-        # Deep-copy every attribute
-        for attr_name, attr_value in self.__dict__.items():
-            setattr(new_env, attr_name, copy.deepcopy(attr_value, memo))
+    def clone(self):
+        new_env = GymCoinche()
+        new_env.players = [p.clone() for p in self.players]
+        new_env.deck = self.deck.clone()
+        new_env.round_number = self.round_number
+        new_env.reshuffle_deck_each_round = self.reshuffle_deck_each_round
+        new_env.dealer_index = copy.deepcopy(self.dealer_index)
+        new_env.current_bidding_player_index = self.current_bidding_player_index
+        new_env.bids = copy.deepcopy(self.bids)
+        new_env.current_bid = None if not self.current_bid else (copy.deepcopy(self.current_bid[0]), Suit(self.current_bid[1].value))
+        new_env.bid_winning_player = None if not self.bid_winning_player else self.bid_winning_player.clone()
+        new_env.passes_in_row = copy.deepcopy(self.passes_in_row)
+        new_env.atout_suit = None if not self.atout_suit else Suit(self.atout_suit.value)
+        new_env.contract_value = copy.deepcopy(self.contract_value)
+        new_env.coinche_surcoinche = copy.deepcopy(self.coinche_surcoinche)
+        new_env.bidding_done = copy.deepcopy(self.bidding_done)
+        new_env.attacker_team = copy.deepcopy(self.attacker_team)
+        new_env.current_trick_rotation = self.current_trick_rotation
+        new_env.played_tricks = [trick.clone() for trick in self.played_tricks]
+        new_env.trick = self.trick.clone() if self.trick else None
+        new_env.suits_order = copy.deepcopy(self.suits_order)
+        new_env.original_hands = copy.deepcopy(self.original_hands)
+        #print("COPIED")
         return new_env
 
-    def copy(self):
-        """
-        Return a deep copy of this environment.
-        """
-        return copy.deepcopy(self)
+'''
+
+
+        self.bid_winning_player = None
+        self.passes_in_row = 0 #TODO: Check if bidding is ok for the first turn
+
+        self.atout_suit = None
+        self.contract_value = None
+        self.coinche_surcoinche = 0
+        self.bidding_done = False
+
+        self.attacker_team = 0
+        self.current_trick_rotation = []
+        self.played_tricks = []
+        self.trick = None
+        self.suits_order = None
+        self.original_hands = {}
+        self.total_score = 0'''
