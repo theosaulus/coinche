@@ -195,14 +195,14 @@ class DeterministicPlayer_v2(RandomPlayer):
             opp80 = last_max_opponent_bid in (1,2,3,4)
             # strong handle: look for 110 first
             for s in suits_order:
-                if has_jack[s] and has_nine[s] and has_ace[s] and has_ten[s] and suit_counts[s]>=4:
+                if has_jack[s] and has_nine[s] and has_ace[s] and has_ten[s]:
                     val = 110 + (10 if opp80 else 0)
                     action = encode_bid_action(val, s)
                     break
             else: # if no 110, look for 90 or 80
                 # 90 fort
                 for s in suits_order:
-                    if has_jack[s] and has_nine[s]:
+                    if has_jack[s] and has_nine[s] and suit_counts[s] >= 3:
                         val = 90 + (10 if opp80 else 0)
                         action = encode_bid_action(val, s)
                         break
@@ -210,8 +210,7 @@ class DeterministicPlayer_v2(RandomPlayer):
                 if action==0:
                     for s in suits_order:
                         j,n,c = has_jack[s], has_nine[s], suit_counts[s]
-                        ace_else = any(has_ace[x] for x in suits_order if x!=s)
-                        if (j or n) and (c>=2 or (c>=1 and ace_else)):
+                        if (j or n) and (c>=3 or has_ace[s]):
                             val = 80 + (10 if opp80 else 0)
                             action = encode_bid_action(val, s)
                             break
