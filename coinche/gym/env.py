@@ -452,11 +452,11 @@ class GymCoinche(Env):
         def _curriculum(val):
             if self.curriculum_masking:
                 if self.round_number < self.curriculum_bounds[0]:
-                    val = [action for action in val if action <= 4]
-                if self.round_number < self.curriculum_bounds[1]:
                     val = [action for action in val if action <= 12]
-                if self.round_number < self.curriculum_bounds[2]:
+                if self.round_number < self.curriculum_bounds[1]:
                     val = [action for action in val if action <= 24]
+                if self.round_number < self.curriculum_bounds[2]:
+                    val = [action for action in val if action <= 36]
             return val
 
         if current_bid is None:
