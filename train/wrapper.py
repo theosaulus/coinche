@@ -31,9 +31,11 @@ class CoincheState:
         return self.env._legal_action()
 
     def apply_action(self, action):
-        obs, _, terminated, _, _ = self.env.step(action)
+        #obs, reward, terminated, False, info
+        (obs, reward, terminated, _, info) = self.env.step(action)
         self.observation = obs
         self.terminated = terminated
+        return obs, reward, terminated, False, info
 
     def is_terminal(self):
         return self.terminated
@@ -54,7 +56,283 @@ class CoincheState:
         cloned.observation = np.copy(self.observation)
         cloned.terminated = self.terminated
         return cloned
+    
 
+class DeepCFR:
+    def __init__(self, config: dict):
+        self.cpu_count = os.cpu_count() or 1
+        #self.learning_players = 0
+        #self.learning_players_idx = []
+        # Setup players (self-play, random or deterministic opponents)
+        cfr_players = config.get('cfr_players', 'self_play')
+        if cfr_players == 'self_play':
+            self.players = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
+            self.learning_players = 4
+            self.learning_players_idx = [0, 1, 2, 3]
+        elif cfr_players == 'random_opponent':
+            self.players = [GymPlayer(0, "N"), RandomPlayer(1, "E"),
+                            GymPlayer(2, "S"), RandomPlayer(3, "W")]
+            self.learning_players = 2
+            self.learning_players_idx = [0, 2,]
+        elif cfr_players == 'det_opponent':
+            self.players = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"),
+                            GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
+            self.learning_players = 2
+            self.learning_players_idx = [0, 2, ]
+        elif cfr_players == 'adv_opponent':
+            self.players = [GymPlayer(0, "N"), GymPlayer(1, "E") ,
+                           DeterministicPlayer(2, "S"), DeterministicPlayer(3, "W")]
+            self.learning_players = 2
+            self.learning_players_idx = [0, 1, ]
+        elif cfr_players == 'det2_opponent':
+            self.players = [GymPlayer(0, "N"), DeterministicPlayer_v2(1, "E"),
+                            DeterministicPlayer_v2(2, "S"), DeterministicPlayer_v2(3, "W")]
+            self.learning_players = 1
+            self.learning_players_idx = [0,]
+        else:
+            raise ValueError("Invalid player configuration.")
+
+        # Initialize state template to get dims
+        self.template = CoincheState(players=self.players, reset=False)
+        obs0 = self.template.observation_tensor()
+        self.obs_dim = obs0.shape[0]
+        self.num_players = len(self.template.returns())
+        self.num_actions = self.template.env.action_space.n
+
+        # Hyperparameters and defaults
+        defaults = {
+            'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
+            'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
+            'batch_size': 256, 'num_iterations': 10, 'log_interval': 1,
+            'num_traversals': 1, 'num_samples': 2, 
+            'adv_epochs': 1, 'pol_epochs': 1, 
+        }
+        
+        self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
+        self.log_interval = config.get('log_every', defaults['log_interval'])
+        self.batch_size = config.get('batch_size', defaults['batch_size'])
+        self.adv_hidden = config.get('adv_hidden', defaults['adv_hidden'])
+        self.adv_lr = config.get('adv_lr', defaults['adv_lr'])
+        self.adv_mem_size = config.get('adv_mem_size', defaults['adv_mem_size'])
+        self.pol_hidden = config.get('pol_hidden', defaults['pol_hidden'])
+        self.pol_lr = config.get('pol_lr', defaults['pol_lr'])
+        self.pol_mem_size = config.get('pol_mem_size', defaults['pol_mem_size'])
+        self.num_traversals = config.get('num_traversals', defaults['num_traversals'])
+        self.adv_epochs = config.get('adv_epochs', defaults['adv_epochs'])
+        self.pol_epochs = config.get('pol_epochs', defaults['pol_epochs'])
+        self.max_workers = config.get('max_workers', self.cpu_count)
+        self.num_samples = config.get('num_samples', defaults['num_samples'])
+
+        # Networks and optimizers
+        self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
+                         for _ in range(self.num_players)]
+        self.adv_opts = [optim.Adam(net.parameters(), lr=self.adv_lr)
+                         for net in self.adv_nets]
+        self.policy_net = make_mlp(self.obs_dim + 1, self.num_actions, self.pol_hidden)
+        self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=self.pol_lr)
+
+        # Memories
+        self.adv_memory = None
+        self.pol_memory = None
+
+    def optimize_adv(self, player):
+        if len(self.adv_memory[player]) < self.batch_size:
+            return 0
+        batch = self.adv_memory[player].sample(self.batch_size)
+        obs = torch.stack([torch.tensor(b.obs, dtype=torch.float32) for b in batch])
+        acts = torch.tensor([b.action for b in batch], dtype=torch.long)
+        advs = torch.tensor([b.advantage for b in batch], dtype=torch.float32)
+        preds = self.adv_nets[player](obs)
+        chosen = preds.gather(1, acts.unsqueeze(1)).squeeze(1)
+        loss = nn.MSELoss()(chosen, advs)
+        opt = self.adv_opts[player]
+        opt.zero_grad(); loss.backward(); opt.step()
+        return loss.item()
+
+    def optimize_policy(self):
+        if len(self.pol_memory) < self.batch_size:
+            return 0
+        batch = self.pol_memory.sample(self.batch_size)
+        obs_inputs = np.array([np.insert(b.obs, 0, b.player) for b in batch], dtype=np.float32)
+        obs_batch = torch.tensor(obs_inputs, dtype=torch.float32)
+        pi_targets = torch.tensor([b.pi_target for b in batch], dtype=torch.float32)
+        logits = self.policy_net(obs_batch)
+        pred_pi = torch.softmax(logits, dim=1)
+        loss = nn.MSELoss()(pred_pi, pi_targets)
+        self.policy_opt.zero_grad(); loss.backward(); self.policy_opt.step()
+        return loss.item()
+    
+    def get_policy(self):
+        return self.policy_net
+
+    def save(self, prefix):
+        for i, net in enumerate(self.adv_nets):
+            torch.save(net.state_dict(), f"{prefix}_adv_{i}.pt")
+        torch.save(self.policy_net.state_dict(), f"{prefix}_policy.pt")
+
+    def evaluate_policy(self, policy, it=-1, num_episodes=50):
+        #print(f"Evaluating policy {it}...")
+        #print(f"Number of episodes: {num_episodes}")
+        total = np.zeros(self.num_players)
+        eps_len = np.empty(num_episodes)
+        infos = []
+        rewards = np.empty(num_episodes)
+        for eps in range(num_episodes):
+            #print(eps)
+            state = CoincheState(players=self.players)
+            eps_len_temp = 0
+            while not state.is_terminal():
+                eps_len_temp += 1
+                current = state.current_player()
+                obs = state.information_state_tensor()
+                logits = policy(
+                    torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
+                ).squeeze(0)
+                legal = state.legal_actions()
+                mask = torch.zeros(self.num_actions)
+                mask[legal] = 1
+                unscaled = torch.exp(logits) * mask
+                probs = (unscaled / unscaled.sum()).detach().cpu().numpy()
+                action = legal[np.argmax(probs[legal])]
+
+                #print(eps_len_temp, action)
+                (_, last_rewards, _, _, last_info) = state.apply_action(action)
+            total += np.array(state.returns(), dtype=float)
+            eps_len[eps] = eps_len_temp
+            rewards[eps] = last_rewards
+            infos.append(last_info)
+            #print(last_info)
+            
+        #print(f"Average episode length: {np.mean(eps_len)}")
+        self.save(f"t_{it}")
+        additional_info = self.get_metrics(num_episodes, infos, rewards)
+        #print(total)
+        results = {
+            'avg_eps': np.mean(eps_len),
+            **{f"policy_avg_reward/player_{i}": r/ num_episodes
+            for i, r in enumerate(total)},
+            'policy_avg_reward/mean': total[self.learning_players_idx].mean() / num_episodes,
+            'avg_reward': total / num_episodes,}
+        results.update(additional_info)
+        return results
+
+
+
+    def get_metrics(self, n_episodes, infos, rewards):
+        # Initialize result arrays
+        atk_rate = np.zeros(n_episodes)
+        atk_rewards = np.zeros(n_episodes)
+        def_rewards = np.zeros(n_episodes)
+        atk_success = np.zeros(n_episodes)
+        def_success = np.zeros(n_episodes)
+        atk_capot_ann = np.zeros(n_episodes)
+        atk_capot_real = np.zeros(n_episodes)
+        def_capot_ann = np.zeros(n_episodes)
+        def_capot_real = np.zeros(n_episodes)
+        atk_contr_val = np.zeros(n_episodes)
+        def_contr_val = np.zeros(n_episodes)
+        atk_coinche_ann = np.zeros(n_episodes)
+        atk_coinche_real = np.zeros(n_episodes)
+        def_coinche_ann = np.zeros(n_episodes)
+        def_coinche_real = np.zeros(n_episodes)
+        atk_surcoin_ann = np.zeros(n_episodes)
+        atk_surcoin_real = np.zeros(n_episodes)
+        def_surcoin_ann = np.zeros(n_episodes)
+        def_surcoin_real = np.zeros(n_episodes)
+        atk_bid_precision = []
+        def_bid_precision = []
+        for n in range(n_episodes):
+            info = infos[n]
+            rew = rewards[n]
+            #print(info)
+            if "gymplayer_attacker_yn" in info:
+                is_atk = bool(info["gymplayer_attacker_yn"])
+                is_contract_realized = bool(info.get("contract_realized", False))
+
+                # attacker rate and rewards
+                if is_atk:
+                    atk_rate[n] = 1
+                    atk_rewards[n] = rew
+                else:
+                    atk_rate[n] = 0
+                    def_rewards[n] = rew
+
+                # contract success
+                if is_atk:
+                    atk_success[n] = is_contract_realized
+                else:
+                    def_success[n] = 1 - is_contract_realized
+
+                # capot announced and realized
+                capot_ann = bool(info.get("capot_announced", False))
+                capot_real = bool(info.get("capot_realized", False))
+                if is_atk:
+                    atk_capot_ann[n] = capot_ann
+                    atk_capot_real[n] = capot_real
+                else:
+                    def_capot_ann[n] = capot_ann
+                    def_capot_real[n] = capot_real
+
+                # contract value
+                val = float(info.get("contract_value", 0))
+                if is_atk:
+                    atk_contr_val[n] = val
+                else:
+                    def_contr_val[n] = val
+
+                # coinche / surcoinche announced and realized
+                coin = info.get("coinche_surcoinche", 0)
+                ann_c = (coin == 1)
+                real_c = ann_c and is_contract_realized
+                ann_s = (coin == 2)
+                real_s = ann_s and is_contract_realized
+                if is_atk:
+                    atk_coinche_ann[n] = ann_c
+                    atk_coinche_real[n] = real_c
+                    atk_surcoin_ann[n] = ann_s
+                    atk_surcoin_real[n] = real_s
+                else:
+                    def_coinche_ann[n] = ann_c
+                    def_coinche_real[n] = real_c
+                    def_surcoin_ann[n] = ann_s
+                    def_surcoin_real[n] = real_s
+
+                # bid precision: compare contract_value with the score obtained, excluding capot
+                bid = float(info.get("contract_value", 0))
+                atk_score = float(info.get("attacker_score_raw", 0))
+                if not (capot_ann or ann_c or ann_s):
+                    precision = abs(atk_score - bid)
+                    if is_atk:
+                        atk_bid_precision.append(precision)
+                    else:
+                        def_bid_precision.append(precision)
+
+        # Summarize into dictionary
+        metrics = {
+            "atk_rate": float(np.mean(atk_rate)),
+            "atk_reward_mean": float(np.mean(atk_rewards)),
+            "def_reward_mean": float(np.mean(def_rewards)),
+            "atk_success_rate": float(np.mean(atk_success)),
+            "def_success_rate": float(np.mean(def_success)),
+            "atk_capot_ann_rate": float(np.mean(atk_capot_ann)),
+            "atk_capot_real_rate": float(np.mean(atk_capot_real)),
+            "def_capot_ann_rate": float(np.mean(def_capot_ann)),
+            "def_capot_real_rate": float(np.mean(def_capot_real)),
+            "atk_contr_val_mean": float(np.mean(atk_contr_val)),
+            "def_contr_val_mean": float(np.mean(def_contr_val)),
+            "atk_coinche_ann_rate": float(np.mean(atk_coinche_ann)),
+            "atk_coinche_real_rate": float(np.mean(atk_coinche_real)),
+            "def_coinche_ann_rate": float(np.mean(def_coinche_ann)),
+            "def_coinche_real_rate": float(np.mean(def_coinche_real)),
+            "atk_surcoin_ann_rate": float(np.mean(atk_surcoin_ann)),
+            "atk_surcoin_real_rate": float(np.mean(atk_surcoin_real)),
+            "def_surcoin_ann_rate": float(np.mean(def_surcoin_ann)),
+            "def_surcoin_real_rate": float(np.mean(def_surcoin_real)),
+            "atk_bid_precision_mean": float(np.mean(atk_bid_precision)) if atk_bid_precision else None,
+            "def_bid_precision_mean": float(np.mean(def_bid_precision)) if def_bid_precision else None
+        }
+
+        return metrics
 # Transitions for advantage and policy memories
 AdvTransition = namedtuple('AdvTransition', ['obs', 'action', 'advantage'])
 PolTransition = namedtuple('PolTransition', ['obs', 'pi_target', 'player'])
@@ -79,72 +357,8 @@ def make_mlp(input_dim, output_dim, hidden_sizes):
     layers.append(nn.Linear(prev, output_dim))
     return nn.Sequential(*layers)
 
-class DeepCFRWrapper:
-    def __init__(self, config: dict):
-
-        self.cpu_count = os.cpu_count() or 1
-        
-        # Setup players (self-play, random or deterministic opponents)
-        cfr_players = config.get('cfr_players', 'self_play')
-        if cfr_players == 'self_play':
-            self.players = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
-        elif cfr_players == 'random_opponent':
-            self.players = [GymPlayer(0, "N"), RandomPlayer(1, "E"),
-                            GymPlayer(2, "S"), RandomPlayer(3, "W")]
-        elif cfr_players == 'det_opponent':
-            self.players = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"),
-                            GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
-        elif cfr_players == 'det2_opponent':
-            self.players = [GymPlayer(0, "N"), DeterministicPlayer_v2(1, "E"),
-                            DeterministicPlayer_v2(2, "S"), DeterministicPlayer_v2(3, "W")]
-        else:
-            raise ValueError("Invalid player configuration.")
-
-        # Initialize state template to get dims
-        template = CoincheState(players=self.players, reset=False)
-        obs0 = template.observation_tensor()
-        self.obs_dim = obs0.shape[0]
-        self.num_players = len(template.returns())
-        self.num_actions = template.env.action_space.n
-
-        # Hyperparameters and defaults
-        defaults = {
-            'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
-            'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
-            'batch_size': 256, 'num_iterations': 10, 'log_interval': 1,
-            'num_traversals': 1, 'adv_epochs': 1, 'pol_epochs': 1, 
-        }
-        self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
-        self.log_interval = config.get('log_every', defaults['log_interval'])
-        self.batch_size = config.get('batch_size', defaults['batch_size'])
-        self.adv_hidden = config.get('adv_hidden', defaults['adv_hidden'])
-        self.adv_lr = config.get('adv_lr', defaults['adv_lr'])
-        self.adv_mem_size = config.get('adv_mem_size', defaults['adv_mem_size'])
-        self.pol_hidden = config.get('pol_hidden', defaults['pol_hidden'])
-        self.pol_lr = config.get('pol_lr', defaults['pol_lr'])
-        self.pol_mem_size = config.get('pol_mem_size', defaults['pol_mem_size'])
-        self.num_traversals = config.get('num_traversals', defaults['num_traversals'])
-        self.adv_epochs = config.get('adv_epochs', defaults['adv_epochs'])
-        self.pol_epochs = config.get('pol_epochs', defaults['pol_epochs'])
-        self.max_workers = config.get('max_workers', self.cpu_count)
-
-        # Networks and optimizers
-        self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
-                         for _ in range(self.num_players)]
-        self.adv_opts = [optim.Adam(net.parameters(), lr=self.adv_lr)
-                         for net in self.adv_nets]
-        self.policy_net = make_mlp(self.obs_dim + 1, self.num_actions, self.pol_hidden)
-        self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=self.pol_lr)
-
-        # Memories
-        self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
-        self.pol_memory = ReplayBuffer(self.pol_mem_size)
-
-        self.log_data = {'iter':[], 'policy_loss':[], 'player_rewards':[]}
-
-        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
-        self.lock = threading.Lock()
-        
+class DeepCFRWrapper(DeepCFR):
+    
     def traverse(self, state, target, pi=1.0, pi_op=1.0):
         if state.is_terminal():
             return state.returns()[target]
@@ -164,7 +378,7 @@ class DeepCFRWrapper:
             with torch.no_grad():
                 v_all = self.adv_nets[cur](torch.tensor(obs,dtype=torch.float32).unsqueeze(0)).squeeze(0)
 
-
+            '''
             def worker(a):
                 nxt = state.clone()
                 nxt.apply_action(a)
@@ -180,6 +394,7 @@ class DeepCFRWrapper:
                 a, util = f.result()
                 utilities[a] = util
                 #break
+            '''
             '''def worker(a):
                 nxt = state.clone()
                 nxt.apply_action(a)
@@ -196,15 +411,22 @@ class DeepCFRWrapper:
             with ThreadPoolExecutor(max_workers=max_workers) as exe:
                 for a, util in exe.map(worker, legal):
                     utilities[a] = util'''
-
+            utilities = {}
+            for a in legal:
+                nxt = state.clone()
+                nxt.apply_action(a)
+                utilities[a] = self.traverse(nxt, target, pi*pol[a].item(), pi_op)
+                adv = (utilities[a] - v_all[a].item()) / pi_op
+                self.adv_memory[cur].push(AdvTransition(obs, a, adv))
+                
         
             # policy target
             v_np = v_all.cpu().numpy()
             mask_arr = np.zeros(self.num_actions); mask_arr[legal]=1
             adv_pos = np.clip(v_np,0,None)*mask_arr
             pi_tgt = adv_pos/adv_pos.sum() if adv_pos.sum()>0 else mask_arr/mask_arr.sum()
-            with self.lock:
-                self.pol_memory.push(PolTransition(obs,pi_tgt,cur))
+            #with self.lock:
+            self.pol_memory.push(PolTransition(obs,pi_tgt,cur))
 
             # sample action to continue
             a_samp = legal[torch.multinomial(pol[legal],1).item()]
@@ -215,56 +437,23 @@ class DeepCFRWrapper:
             nxt = state.clone(); nxt.apply_action(a_samp)
             return self.traverse(nxt, target, pi, pi_op*pol[a_samp].item())
 
-    def optimize_adv(self, player):
-        if len(self.adv_memory[player]) < self.batch_size:
-            return 0
-        batch = self.adv_memory[player].sample(self.batch_size)
-        obs = torch.stack([torch.tensor(b.obs, dtype=torch.float32) for b in batch])
-        acts = torch.tensor([b.action for b in batch], dtype=torch.long)
-        advs = torch.tensor([b.advantage for b in batch], dtype=torch.float32)
-        preds = self.adv_nets[player](obs)
-        chosen = preds.gather(1, acts.unsqueeze(1)).squeeze(1)
-        loss = nn.MSELoss()(chosen, advs)
-        opt = self.adv_opts[player]
-        opt.zero_grad(); loss.backward(); opt.step()
-        return loss
-
-    def optimize_policy(self):
-        if len(self.pol_memory) < self.batch_size:
-            return
-        batch = self.pol_memory.sample(self.batch_size)
-        obs_inputs = np.array([np.insert(b.obs, 0, b.player) for b in batch], dtype=np.float32)
-        obs_batch = torch.tensor(obs_inputs, dtype=torch.float32)
-        pi_targets = torch.tensor([b.pi_target for b in batch], dtype=torch.float32)
-        logits = self.policy_net(obs_batch)
-        pred_pi = torch.softmax(logits, dim=1)
-        loss = nn.MSELoss()(pred_pi, pi_targets)
-        self.policy_opt.zero_grad(); loss.backward(); self.policy_opt.step()
-
     def learn(self, total_timesteps, callback=None, use_masking=False):
-        init_zeros = [0, 0, 0, 0]
-        metrics = {
-            "iteration": 0,           
-            **{f"adv_sizes/player_{i}": size
-            for i, size in enumerate(init_zeros)},
-            "pol_size": len(self.pol_memory),   
-            "policy_loss": 0,  
-            "policy_avg_eps_length": 0,
-            **{f"policy_avg_reward/player_{i}": r
-            for i, r in enumerate(init_zeros)},
-        }
-        wandb.log(metrics)
+        self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
+        self.pol_memory = ReplayBuffer(self.pol_mem_size)
+
+
         for it in range(self.num_iterations):
             # Reset advantage memory
-            self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
+            #self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
             # Collect advantage samples
+            cur_adv_loss = np.zeros(self.num_players)
             for p in range(self.num_players):
                 for _ in range(self.num_traversals):
                     state = CoincheState(players=self.players)
                     self.traverse(state, p)
                 # Train advantage network
                 for _ in range(self.adv_epochs):
-                    self.optimize_adv(p)
+                    cur_adv_loss[p] = self.optimize_adv(p)
             # Train policy network
             cur_pol_loss = 0
             for _ in range(self.pol_epochs):
@@ -273,115 +462,43 @@ class DeepCFRWrapper:
                 print(f"[DeepCFR] Iter {it+1}/{self.num_iterations}, "
                       f"adv sizes={[len(buf) for buf in self.adv_memory]}, "
                       f"pol size={len(self.pol_memory)}")
-                policy_eval = self.evaluate_policy(self.policy_net, it)
+                policy_eval = self.evaluate_policy(self.policy_net, it=it)
                 print(f"[DeepCFR] Policy: {cur_pol_loss}") 
+                print(f"[DeepCFR] Policy: {policy_eval.pop('avg_reward')}")
                 # Log metrics to Weights & Biases
                 metrics = {
                     "iteration": it + 1,           
-                    **{f"adv_sizes/player_{i}": size
-                    for i, size in enumerate(self.adv_memory)},  
-                    "policy_loss": len(self.pol_memory),  
-                    "policy_eval_loss": cur_pol_loss,   
-                    "policy_avg_eps_length": policy_eval['avg_eps'],
-                    **{f"policy_avg_reward/player_{i}": r
-                    for i, r in enumerate(policy_eval["avg_reward"])},
+                    **{f"adv_sizes/player_{i}": len(buf)
+                    for i, buf in enumerate(self.adv_memory)},  
+                    **{f"adv_loss/player_{i}": loss
+                    for i, loss in enumerate(cur_adv_loss)}, 
+                    "pol_size": len(self.pol_memory),  
+                    "policy_loss": cur_pol_loss,   
                     }
-                wandb.log(metrics)  
+                metrics.update(policy_eval)
+                wandb.log(metrics)
+                self.save(f"t_{it}")
 
 
-    def get_policy(self):
-        return self.policy_net
+SingleTransition = namedtuple('SingleTransition', ['obs', 'action', 'advantage', 'player', ]) #'pi'
 
-    def save(self, prefix):
-        for i, net in enumerate(self.adv_nets):
-            torch.save(net.state_dict(), f"{prefix}_adv_{i}.pt")
-        torch.save(self.policy_net.state_dict(), f"{prefix}_policy.pt")
+class ReplayBufferSingle:
+     def __init__(self, capacity):
+         self.buffer = deque(maxlen=capacity)
+ 
+     '''def push(self, *args):
+         self.buffer.append(SingleTransition(*args))'''
+     def push(self, obs, action, advantage, player):
+         self.buffer.append(SingleTransition(obs, action, advantage, player))
+ 
+     def sample(self, batch_size):
+         return random.sample(self.buffer, batch_size)
+ 
+     def __len__(self):
+         return len(self.buffer)
 
-    def evaluate_policy(self, policy, num_episodes=50, it=None):
-        total = np.zeros(self.num_players)
-        logger = {}
-        eps_len = []
-        for _ in range(num_episodes):
-            state = CoincheState(players=self.players)
-            eps_len_temp = 0
-            while not state.is_terminal():
-                eps_len_temp += 1
-                current = state.current_player()
-                obs = state.information_state_tensor()
-                logits = policy(
-                    torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
-                ).squeeze(0)
-                legal = state.legal_actions()
-                mask = torch.zeros(self.num_actions)
-                mask[legal] = 1
-                unscaled = torch.exp(logits) * mask
-                probs = (unscaled / unscaled.sum()).detach().cpu().numpy()
-                action = legal[np.argmax(probs[legal])]
-                state.apply_action(action)
-            total += np.array(state.returns(), dtype=float)
-            eps_len.append(eps_len_temp)
-        #print(f"Average episode length: {np.mean(eps_len)}")
-        self.save(f"t_{it}")
-        results = {
-            'avg_eps': np.mean(eps_len),
-            'avg_reward': total / num_episodes}
-        return results 
-
-
-
-class SingleDeepCFRWrapper:
-    def __init__(self, config: dict):
-        # Setup players
-        cfr_players = config.get('cfr_players', 'self_play')
-        if cfr_players == 'self_play':
-            self.players = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
-        elif cfr_players == 'random_opponent':
-            self.players = [GymPlayer(0, "N"), RandomPlayer(1, "E"),
-                            GymPlayer(2, "S"), RandomPlayer(3, "W")]
-        elif cfr_players == 'det_opponent':
-            self.players = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"),
-                            GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
-        else:
-            raise ValueError("Invalid player configuration.")
-
-        template = CoincheState(players=self.players, reset=False)
-        obs0 = template.observation_tensor()
-        self.obs_dim = obs0.shape[0]
-        self.num_players = len(template.returns())
-        self.num_actions = template.env.action_space.n
-
-        defaults = {
-            'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
-            'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
-            'batch_size': 256, 'num_iterations': 10000, 'log_interval': 10,
-            'num_traversals': 512, 'adv_epochs': 16, 'pol_epochs': 16
-        }
-        self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
-        self.log_interval = config.get('log_every', defaults['log_interval'])
-        self.batch_size = config.get('batch_size', defaults['batch_size'])
-        self.adv_hidden = config.get('adv_hidden', defaults['adv_hidden'])
-        self.adv_lr = config.get('adv_lr', defaults['adv_lr'])
-        self.adv_mem_size = config.get('adv_mem_size', defaults['adv_mem_size'])
-        self.pol_hidden = config.get('pol_hidden', defaults['pol_hidden'])
-        self.pol_lr = config.get('pol_lr', defaults['pol_lr'])
-        self.pol_mem_size = config.get('pol_mem_size', defaults['pol_mem_size'])
-        self.num_traversals = config.get('num_traversals', defaults['num_traversals'])
-        self.adv_epochs = config.get('adv_epochs', defaults['adv_epochs'])
-        self.pol_epochs = config.get('pol_epochs', defaults['pol_epochs'])
-
-        self.adv_nets = [
-            make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
-            for _ in range(self.num_players)
-        ]
-        self.adv_opts = [
-            optim.Adam(net.parameters(), lr=self.adv_lr)
-            for net in self.adv_nets
-        ]
-        self.policy_net = make_mlp(self.obs_dim + 1, self.num_actions, self.pol_hidden)
-        self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=self.pol_lr)
-
-        self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
-        self.pol_memory = ReplayBuffer(self.pol_mem_size)
+class SingleDeepCFRWrapper(DeepCFR):
+    
 
     def traverse(self, state, target_player, pi=1.0, pi_op=1.0):
         if state.is_terminal():
@@ -411,9 +528,7 @@ class SingleDeepCFRWrapper:
                     torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
                 ).squeeze(0)
             advantage = (u - v[action].item()) / pi_op
-            self.adv_memory[current].push(
-                AdvTransition(obs, action, advantage)
-            )
+            self.adv_memory[current].push(obs=obs, action=action, advantage=advantage, player=current)
             v_np = v.detach().cpu().numpy()
             mask_arr = np.zeros(self.num_actions)
             mask_arr[legal] = 1
@@ -422,9 +537,9 @@ class SingleDeepCFRWrapper:
                 pi_target = adv_pos / adv_pos.sum()
             else:
                 pi_target = mask_arr / mask_arr.sum()
-            self.pol_memory.push(
-                PolTransition(obs, pi_target, current)
-            )
+            
+            self.pol_memory.push(obs=obs, action=pi_target, advantage=advantage, player=current)
+            
             return u
         else:
             return self.traverse(
@@ -432,11 +547,63 @@ class SingleDeepCFRWrapper:
                 pi, pi_op * probs[action].item()
             )
 
+    def learn(self, total_timesteps, callback=None, use_masking=False):
+        self.adv_memory = [ReplayBufferSingle(self.adv_mem_size) for _ in range(self.num_players)]
+        self.pol_memory = ReplayBufferSingle(self.pol_mem_size)
+        for it in range(self.num_iterations):
+            #self.adv_memory = [ReplayBufferSingle(self.adv_mem_size) for _ in range(self.num_players)]
+            cur_adv_loss = np.zeros(self.num_players)
+            for p in range(self.num_players):
+                for _ in range(self.num_traversals):
+                    state = CoincheState(players=self.players)
+                    self.traverse(state, p)
+                for _ in range(self.adv_epochs):
+                    cur_adv_loss[p] = self.optimize_adv(p)
+            cur_pol_loss = 0
+            for _ in range(self.pol_epochs):
+                cur_pol_loss += self.optimize_policy()/self.pol_epochs
+            if (it + 1) % self.log_interval == 0:
+                print(f"[SingleDeepCFR] Iter {it+1}/{self.num_iterations}, "
+                      f"adv sizes={[len(buf) for buf in self.adv_memory]}, "
+                      f"pol size={len(self.pol_memory)}")
+                policy_eval = self.evaluate_policy(self.policy_net, it=it)
+                print(f"[SingleDeepCFR] Policy: {cur_pol_loss}") 
+                print(f"[SingleDeepCFR] Policy: {policy_eval.pop('avg_reward')}")
+                metrics = {
+                    "iteration": it + 1,           
+                    **{f"adv_sizes/player_{i}": len(buf)
+                    for i, buf in enumerate(self.adv_memory)},  
+                    **{f"adv_loss/player_{i}": loss
+                    for i, loss in enumerate(cur_adv_loss)}, 
+                    "pol_size": len(self.pol_memory),  
+                    "policy_loss": cur_pol_loss,   
+                    }
+                metrics.update(policy_eval)
+                wandb.log(metrics)
+                self.save(f"t_{it}")
+
+
+SampleTransition = namedtuple('SampleTransition', ['obs', 'action', 'advantage', 'player', ]) #'pi'
+
+class ReplayBufferSample:
+     def __init__(self, capacity):
+         self.buffer = deque(maxlen=capacity)
+ 
+     def push(self, *args):
+         self.buffer.append(SampleTransition(*args))
+ 
+     def sample(self, batch_size):
+         return random.sample(self.buffer, batch_size)
+ 
+     def __len__(self):
+         return len(self.buffer)
+
+class SampleDeepCFRWrapper(DeepCFR):
     def optimize_adv(self, player):
         if len(self.adv_memory[player]) < self.batch_size:
             return
         batch = self.adv_memory[player].sample(self.batch_size)
-        obs = torch.stack([torch.tensor(b.obs, dtype=torch.float32) for b in batch])
+        obs = torch.tensor([b.obs for b in batch], dtype=torch.float32)
         acts = torch.tensor([b.action for b in batch], dtype=torch.long)
         advs = torch.tensor([b.advantage for b in batch], dtype=torch.float32)
         preds = self.adv_nets[player](obs)
@@ -444,135 +611,30 @@ class SingleDeepCFRWrapper:
         loss = nn.MSELoss()(chosen, advs)
         opt = self.adv_opts[player]
         opt.zero_grad(); loss.backward(); opt.step()
+        return loss.item()
 
     def optimize_policy(self):
         if len(self.pol_memory) < self.batch_size:
             return
         batch = self.pol_memory.sample(self.batch_size)
-        obs_inputs = np.array([np.insert(b.obs, 0, b.player) for b in batch], dtype=np.float32)
-        obs_batch = torch.tensor(obs_inputs, dtype=torch.float32)
-        pi_targets = torch.tensor([b.pi_target for b in batch], dtype=torch.float32)
+        #obs_batch = torch.tensor([np.insert(b.obs, 0, b.player) for b in batch], dtype=torch.float32)
+        obs_batch_numpy = np.array([np.insert(b.obs, 0, b.player) for b in batch], dtype=np.float32)
+        obs_batch = torch.tensor(obs_batch_numpy, dtype=torch.float32)
+        pi_targets = torch.tensor([b.action for b in batch], dtype=torch.float32)
         logits = self.policy_net(obs_batch)
         pred_pi = torch.softmax(logits, dim=1)
         loss = nn.MSELoss()(pred_pi, pi_targets)
+        print("Policy loss", loss.item())
         self.policy_opt.zero_grad(); loss.backward(); self.policy_opt.step()
-
-    def learn(self, total_timesteps, callback=None, use_masking=False):
-        for it in range(self.num_iterations):
-            self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
-            for p in range(self.num_players):
-                for _ in range(self.num_traversals):
-                    state = CoincheState(players=self.players)
-                    self.traverse(state, p)
-                for _ in range(self.adv_epochs):
-                    self.optimize_adv(p)
-            for _ in range(self.pol_epochs):
-                self.optimize_policy()
-            if (it + 1) % self.log_interval == 0:
-                print(f"[DeepCFR] Iter {it+1}/{self.num_iterations}, "
-                      f"adv sizes={[len(buf) for buf in self.adv_memory]}, "
-                      f"pol size={len(self.pol_memory)}")
-                print(f"[DeepCFR] Policy: {self.evaluate_policy(self.policy_net)}") 
-
-
-    def get_policy(self):
-        return self.policy_net
-
-    def save(self, prefix):
-        for i, net in enumerate(self.adv_nets):
-            torch.save(net.state_dict(), f"{prefix}_adv_{i}.pt")
-        torch.save(self.policy_net.state_dict(), f"{prefix}_policy.pt")
-
-    def evaluate_policy(self, policy, num_episodes=50):
-        total = np.zeros(self.num_players)
-        eps_len = []
-        for _ in range(num_episodes):
-            state = CoincheState(players=self.players)
-            eps_len_temp = 0
-            while not state.is_terminal():
-                eps_len_temp += 1
-                current = state.current_player()
-                obs = state.information_state_tensor()
-                logits = policy(
-                    torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
-                ).squeeze(0)
-                legal = state.legal_actions()
-                mask = torch.zeros(self.num_actions)
-                mask[legal] = 1
-                unscaled = torch.exp(logits) * mask
-                probs = (unscaled / unscaled.sum()).detach().cpu().numpy()
-                action = legal[np.argmax(probs[legal])]
-                state.apply_action(action)
-            total += np.array(state.returns(), dtype=float)
-            eps_len.append(eps_len_temp)
-        print(f"Average episode length: {np.mean(eps_len)}")
-        return total / num_episodes
-
-
-
-Transition = namedtuple('Transition', ['obs', 'action', 'advantage', 'player', ]) #'pi'
-
-class SampleDeepCFRWrapper:
-    def __init__(self, config: dict):
-        if config.get('cfr_players') is not None:
-            if config['cfr_players'] == 'self_play':
-                self.players = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
-            elif config['cfr_players'] == 'random_opponent':
-                self.players = [GymPlayer(0, "N"), RandomPlayer(1, "E"), GymPlayer(2, "S"), RandomPlayer(3, "W")]
-            elif config['cfr_players'] == 'det_opponent':
-                self.players = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"), GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
-            else:
-                raise ValueError("Invalid player configuration. Use 'self_play', 'random_opponent', or 'det_opponent'.")
-        else:
-            self.players = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
+        return loss.item()
         
-        template = CoincheState(players=self.players, reset=False)
-        obs0 = template.observation_tensor()
-        self.obs_dim = len(obs0)
-        self.num_players = len(template.returns())
-        self.num_actions = template.env.action_space.n
-
-        # Hyperparameters
-        defaults = {
-            'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
-            'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
-            'batch_size': 256, 'num_iterations': 10000, 'log_interval': 10,
-            'num_traversals': 512, 'num_samples': 5
-        }
-        self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
-        self.log_interval = config.get('log_every', defaults['log_interval'])
-        self.batch_size = config.get('batch_size', defaults['batch_size'])
-
-        self.adv_hidden = config.get('adv_hidden', defaults['adv_hidden'])
-        self.adv_lr = config.get('adv_lr', defaults['adv_lr'])
-        self.adv_mem_size = config.get('adv_mem_size', defaults['adv_mem_size'])
-        self.pol_hidden = config.get('pol_hidden', defaults['pol_hidden'])
-        self.pol_lr = config.get('pol_lr', defaults['pol_lr'])
-        self.pol_mem_size = config.get('pol_mem_size', defaults['pol_mem_size'])
-
-        self.num_traversals = defaults['num_traversals']
-        self.num_samples = defaults['num_samples']
-
-        # Networks and optimizers
-        self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
-                         for _ in range(self.num_players)]
-        self.adv_opts = [optim.Adam(net.parameters(), lr=self.adv_lr)
-                         for net in self.adv_nets]
-        self.policy_net = make_mlp(self.obs_dim + 1, self.num_actions, self.pol_hidden)
-        self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=self.pol_lr)
-
-        # Memories
-        self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
-        self.pol_memory = ReplayBuffer(self.pol_mem_size)
-        
-
     def traverse(self, state, target_player, pi=1.0, pi_op=1.0, eps_len=0):
         #print(eps_len)
         if state.is_terminal():
             #print("eps_len: ",eps_len)
             #print("state observation: ", state.observation_tensor())
             #print("state returns: ", state.returns())
-            return state.returns()[target_player]
+            return state.returns()[target_player]/500
         current = state.current_player()
         obs = state.information_state_tensor()
         legal = state.legal_actions()
@@ -581,7 +643,53 @@ class SampleDeepCFRWrapper:
             torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
         ).squeeze(0)
         
-        legal_logits = logits[legal]
+        
+        mask = torch.zeros(self.num_actions)
+        mask[legal]=1
+        exp_l = torch.exp(logits)*mask
+        pol = exp_l/exp_l.sum()
+
+        if current == target_player:
+            # compute v_all advantage baseline
+            with torch.no_grad():
+                v_all = self.adv_nets[current](torch.tensor(obs,dtype=torch.float32).unsqueeze(0)).squeeze(0)
+
+            utilities = {}
+            seen = torch.zeros(self.num_actions, dtype=torch.float32)
+            if seen.sum() < len(legal) and seen.sum() < self.num_samples:
+                #a = pol.multinomial(num_samples=1).item()
+                a = torch.multinomial(pol*(1-seen), num_samples=1).item()
+                next_state = state.clone()
+                next_state.apply_action(a)
+                utilities[a] = self.traverse(next_state, target_player, pi*pol[a].item(), pi_op)
+                advantage = (utilities[a] - v_all[a].item()) / pi_op
+                self.adv_memory[current].push(obs, a, advantage, current)
+                seen[a] = 1
+        
+            #v_np = self.adv_nets[current](torch.tensor(obs,dtype=torch.float32).unsqueeze(0)).squeeze(0).cpu().numpy()
+
+            # policy target
+            v_np = v_all.cpu().numpy()
+            mask_arr = np.zeros(self.num_actions); mask_arr[legal]=1
+            adv_pos = np.clip(v_np,0,None)*mask_arr
+            pi_target = adv_pos/adv_pos.sum() if adv_pos.sum()>0 else mask_arr/mask_arr.sum()
+            #with self.lock:
+            #if current != 1 or random.random() < 0.002:
+            self.pol_memory.push(obs, pi_target, None, current)
+
+            # sample action to continue
+            #pol_seen = torch.zeros(self.num_actions)
+            #pol_seen[seen] = pol[seen]
+            a_sample = torch.multinomial(pol*(seen),1).item()
+            next_state = state.clone(); next_state.apply_action(a_sample)
+            return utilities[a_sample]
+        else:
+
+            a_sample = torch.multinomial(pol,1).item()
+            next_state = state.clone()
+            next_state.apply_action(a_sample)
+            return self.traverse(next_state, target_player, pi, pi_op*pol[a_sample].item())
+        '''legal_logits = logits[legal]
         legal_probs = torch.softmax(legal_logits, dim=0)
         probs = torch.zeros_like(logits)
         probs[legal] = legal_probs
@@ -593,10 +701,7 @@ class SampleDeepCFRWrapper:
         if current == target_player:
             u_max = None
             for i in range(self.num_samples):
-                action_idx = legal_probs.multinomial(num_samples=1).item()
-                print("action_idx", action_idx)
-                print("legal", legal)
-                action = legal[action_idx]
+                
                 next_state = state.clone()
                 next_state.apply_action(action)
                 u = self.traverse(next_state, target_player, pi * probs[action], pi_op, eps_len + 1)
@@ -623,81 +728,60 @@ class SampleDeepCFRWrapper:
             next_state = state.clone()
             next_state.apply_action(action)
             return self.traverse(next_state, target_player, pi, pi_op * probs[action], eps_len + 1)
-
-    def optimize_adv(self, player):
-        if len(self.adv_memory[player]) < self.batch_size:
-            return
-        batch = self.adv_memory[player].sample(self.batch_size)
-        obs = torch.tensor([b.obs for b in batch], dtype=torch.float32)
-        acts = torch.tensor([b.action for b in batch], dtype=torch.long)
-        advs = torch.tensor([b.advantage for b in batch], dtype=torch.float32)
-        preds = self.adv_nets[player](obs)
-        chosen = preds.gather(1, acts.unsqueeze(1)).squeeze(1)
-        loss = nn.MSELoss()(chosen, advs)
-        opt = self.adv_opts[player]
-        opt.zero_grad(); loss.backward(); opt.step()
-
-    def optimize_policy(self):
-        if len(self.pol_memory) < self.batch_size:
-            return
-        batch = self.pol_memory.sample(self.batch_size)
-        #obs_batch = torch.tensor([np.insert(b.obs, 0, b.player) for b in batch], dtype=torch.float32)
-        obs_batch_numpy = np.array([np.insert(b.obs, 0, b.player) for b in batch], dtype=np.float32)
-        obs_batch = torch.tensor(obs_batch_numpy, dtype=torch.float32)
-        pi_targets = torch.tensor([b.action for b in batch], dtype=torch.float32)
-        logits = self.policy_net(obs_batch)
-        pred_pi = torch.softmax(logits, dim=1)
-        loss = nn.MSELoss()(pred_pi, pi_targets)
-        print("Policy loss", loss.item())
-        self.policy_opt.zero_grad(); loss.backward(); self.policy_opt.step()
+'''
 
     def learn(self, total_timesteps, callback=None, use_masking=False):
+        '''print("Learning...")
+
+        init_zeros = [0, 0, 0, 0]
+        metrics = {
+            "iteration": 0,           
+            **{f"adv_sizes/player_{i}": size
+            for i, size in enumerate(init_zeros)},
+            "pol_size": len(self.pol_memory),   
+            "policy_loss": 0,  
+            "policy_avg_eps_length": 0,
+            "policy_avg_reward/avg": 0,
+            **{f"policy_avg_reward/player_{i}": r
+            for i, r in enumerate(init_zeros)},
+        }
+        wandb.log(metrics)'''
+        
+        self.adv_memory = [ReplayBufferSample(self.adv_mem_size) for _ in range(self.num_players)]
+        self.pol_memory = ReplayBufferSample(self.pol_mem_size)
         for it in range(total_timesteps):
-            for player in range(self.num_players):
+            #print("Iteration: ", it)
+            cur_adv_loss = np.zeros(self.num_players)
+            for player in self.learning_players_idx:#range(self.num_players):
                 for _ in range(self.num_traversals):
                     state = CoincheState(players=self.players)
                     #print()
+                    #print("Player: ", player)
+                    #print(self.players)
                     self.traverse(state, player)
                     #state 
-                self.optimize_adv(player)
-            self.optimize_policy()
+                cur_adv_loss[player] = self.optimize_adv(player)
+            cur_pol_loss = self.optimize_policy()
             if (it + 1) % self.log_interval == 0:
-                print(f"[DeepCFR] Iter {it+1}/{self.num_iterations}, adv_sizes={[len(buf) for buf in self.adv_memory]}, pol_size={len(self.pol_memory)}")
-                print(f"[DeepCFR] Policy: {self.evaluate_policy(self.policy_net)}") 
+                print(f"[SampleDeepCFR] Iter {it+1}/{self.num_iterations}, adv_sizes={[len(buf) for buf in self.adv_memory]}, pol_size={len(self.pol_memory)}")
+                policy_eval = self.evaluate_policy(self.policy_net, it=it)
+                print(f"[SampleDeepCFR] Policy: {cur_pol_loss}") 
+                print(f"[SampleDeepCFR] Policy: {policy_eval.pop('avg_reward')}")
+                # Log metrics to Weights & Biases
+                metrics = {
+                    "iteration": it + 1,           
+                    **{f"adv_sizes/player_{i}": len(buf)
+                    for i, buf in enumerate(self.adv_memory)},  
+                    **{f"adv_loss/player_{i}": loss
+                    for i, loss in enumerate(cur_adv_loss)}, 
+                    "pol_size": len(self.pol_memory),  
+                    "policy_loss": cur_pol_loss,   
+                    }
+                metrics.update(policy_eval)
+                wandb.log(metrics)
+                self.save(f"t_{it}")
+                
 
-
-    def get_policy(self):
-        return self.policy_net
-
-    def save(self, prefix):
-        for i, net in enumerate(self.adv_nets):
-            torch.save(net.state_dict(), f"{prefix}_adv_{i}.pt")
-        torch.save(self.policy_net.state_dict(), f"{prefix}_policy.pt")
-
-    def evaluate_policy(self, policy, num_episodes=50):
-        total = np.zeros(self.num_players)
-        eps_len = []
-        for _ in range(num_episodes):
-            state = CoincheState(players=self.players)
-            eps_len_temp = 0
-            while not state.is_terminal():
-                eps_len_temp += 1
-                current = state.current_player()
-                obs = state.information_state_tensor()
-                logits = policy(
-                    torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
-                ).squeeze(0)
-                legal = state.legal_actions()
-                mask = torch.zeros(self.num_actions)
-                mask[legal] = 1
-                unscaled = torch.exp(logits) * mask
-                probs = (unscaled / unscaled.sum()).detach().cpu().numpy()
-                action = legal[np.argmax(probs[legal])]
-                state.apply_action(action)
-            total += np.array(state.returns(), dtype=float)
-            eps_len.append(eps_len_temp)
-        print(f"Average episode length: {np.mean(eps_len)}")
-        return total / num_episodes
 
 
 class OnlineCFRWrapper:

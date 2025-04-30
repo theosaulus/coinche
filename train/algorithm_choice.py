@@ -10,7 +10,7 @@ import torch
 
 from sb3_contrib import QRDQN
 
-from train.wrapper import DeepCFRWrapper, OnlineCFRWrapper
+from train.wrapper import DeepCFRWrapper, OnlineCFRWrapper, SampleDeepCFRWrapper, SingleDeepCFRWrapper
 #from coinche.gym.env import GymCoinche
 
 #import pyspiel
@@ -50,12 +50,20 @@ def get_algorithm(config, env):
         #         dynamic=True           # keep control‐flow dynamic if needed
         #     )
         return ppo
+    
     elif algo == "DCFR": 
-        return DeepCFRWrapper(config)
+        if config["dcfr_algo"].lower()  == "full":
+            return DeepCFRWrapper(config) #Full tree DCFR
+    
+        elif config["dcfr_algo"].lower()  == "single": 
+            return SingleDeepCFRWrapper(config) #single trajectory DCFR
+    
+        elif config["dcfr_algo"].lower()  == "sample": 
+            return SampleDeepCFRWrapper(config) #sampled trajectory DCFR
 
-    elif algo == "OCFR": #DO Deep CFR
-        #game = pyspiel.load_game("coinche")
-        return OnlineCFRWrapper(config, env)
+        elif config["dcfr_algo"].lower()  == "online":  #DO Deep CFR
+            #game = pyspiel.load_game("coinche")
+            return OnlineCFRWrapper(config, env)
     
     elif algo == "QRDQN":
         #need to fix if we want to implement -- model.learn( --> TypeError: QRDQN.learn() got an unexpected keyword argument 'use_masking'
