@@ -1,10 +1,10 @@
 project_name: coincheadversarial
 
-wandb: False
+wandb: True
 algorithm: DCFR #PPO
 policy: MlpPolicy
 env_id: coinche-v4
-total_timesteps: 10000 #1_000_000
+total_timesteps: 10 #1_000_000
 
 log_every: 1                 # Log every episode
 checkpoint_every: 1000 #10_000       # Save model every N steps
@@ -18,11 +18,12 @@ save_game_replays: true     # Save replays for analysis
 
 num_envs: 8
 n_steps: 512
-batch_size: 512
+batch_size: 256
 n_epochs: 10
 
-'cfr_players': "self_play" #"self_play" # "self_play" or det_opponent
+'cfr_players': "self_play" 
 
-# "self_play" = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
-# "det_opponent" = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"), GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
-# "random_opponent" = [GymPlayer(0, "N"), RandomPlayer(1, "E"), GymPlayer(2, "S"), RandomPlayer(3, "W")]
+# "self_play" = [GymPlayer, GymPlayer, GymPlayer, GymPlayer]
+# "det_opponent" = [GymPlayer, DeterministicPlayer, GymPlayer, DeterministicPlayer]
+# "random_opponent" = [GymPlayer, RandomPlayer, GymPlayer, RandomPlayer]
+# 'det2_opponent' =  [GymPlayer, DeterministicPlayer_v2, DeterministicPlayer_v2, DeterministicPlayer_v2]

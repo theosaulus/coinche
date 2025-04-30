@@ -1,0 +1,519 @@
+diff --git a/train/config.yaml b/train/config.yaml
+index 76d5d85..3293747 100644
+--- a/train/config.yaml
++++ b/train/config.yaml
+@@ -1,10 +1,10 @@
+ project_name: coincheadversarial
+ 
+-wandb: False
++wandb: True
+ algorithm: DCFR #PPO
+ policy: MlpPolicy
+ env_id: coinche-v4
+-total_timesteps: 10000 #1_000_000
++total_timesteps: 100 #1_000_000
+ 
+ log_every: 1                 # Log every episode
+ checkpoint_every: 1000 #10_000       # Save model every N steps
+@@ -18,11 +18,12 @@ save_game_replays: true     # Save replays for analysis
+ 
+ num_envs: 8
+ n_steps: 512
+-batch_size: 512
++batch_size: 256
+ n_epochs: 10
+ 
+-'cfr_players': "self_play" #"self_play" # "self_play" or det_opponent
++'cfr_players': "self_play" 
+ 
+-# "self_play" = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
+-# "det_opponent" = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"), GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
+-# "random_opponent" = [GymPlayer(0, "N"), RandomPlayer(1, "E"), GymPlayer(2, "S"), RandomPlayer(3, "W")]
++# "self_play" = [GymPlayer, GymPlayer, GymPlayer, GymPlayer]
++# "det_opponent" = [GymPlayer, DeterministicPlayer, GymPlayer, DeterministicPlayer]
++# "random_opponent" = [GymPlayer, RandomPlayer, GymPlayer, RandomPlayer]
++# 'det2_opponent' =  [GymPlayer, DeterministicPlayer_v2, DeterministicPlayer_v2, DeterministicPlayer_v2]
+\ No newline at end of file
+diff --git a/train/wrapper.py b/train/wrapper.py
+index 76fc1f7..4301045 100644
+--- a/train/wrapper.py
++++ b/train/wrapper.py
+@@ -2,7 +2,7 @@ import numpy as np
+ import tensorflow.compat.v1 as tf
+ tf.disable_v2_behavior()
+ from coinche.gym.env import GymCoinche
+-from coinche.player import RandomPlayer, AIPlayer, DeterministicPlayer
++from coinche.player import RandomPlayer, AIPlayer, DeterministicPlayer, DeterministicPlayer_v2
+ from coinche.gym.gymplayer import GymPlayer
+ import torch
+ import torch.nn as nn
+@@ -10,14 +10,19 @@ import torch.optim as optim
+ from collections import deque, namedtuple
+ import random
+ import wandb
++from collections import deque, namedtuple
++from concurrent.futures import ThreadPoolExecutor
++import threading
++import os
+ 
+ 
+ class CoincheState:
+     def __init__(self, players=None, reset=True):
+         self.env = GymCoinche(players=players)
++        self.observation = None
+         if reset:
+-            self._observation, _ = self.env.reset()
+-        self._terminated = False
++            self.observation, _ = self.env.reset()
++        self.terminated = False
+ 
+     def current_player(self):
+         return self.env._get_current_player().index
+@@ -27,11 +32,11 @@ class CoincheState:
+ 
+     def apply_action(self, action):
+         obs, _, terminated, _, _ = self.env.step(action)
+-        self._observation = obs
+-        self._terminated = terminated
++        self.observation = obs
++        self.terminated = terminated
+ 
+     def is_terminal(self):
+-        return self._terminated
++        return self.terminated
+ 
+     def returns(self):
+         return self.env._get_return()
+@@ -46,8 +51,8 @@ class CoincheState:
+         new_players = [p.clone() for p in self.env.players]
+         cloned = CoincheState(new_players, reset=False)
+         cloned.env = self.env.clone(new_players)
+-        cloned._observation = np.copy(self._observation)
+-        cloned._terminated = self._terminated
++        cloned.observation = np.copy(self.observation)
++        cloned.terminated = self.terminated
+         return cloned
+ 
+ # Transitions for advantage and policy memories
+@@ -86,6 +91,9 @@ class DeepCFRWrapper:
+         elif cfr_players == 'det_opponent':
+             self.players = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"),
+                             GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
++        elif cfr_players == 'det2_opponent':
++            self.players = [GymPlayer(0, "N"), DeterministicPlayer_v2(1, "E"),
++                            DeterministicPlayer_v2(2, "S"), DeterministicPlayer_v2(3, "W")]
+         else:
+             raise ValueError("Invalid player configuration.")
+ 
+@@ -100,8 +108,8 @@ class DeepCFRWrapper:
+         defaults = {
+             'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
+             'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
+-            'batch_size': 256, 'num_iterations': 10000, 'log_interval': 1,
+-            'num_traversals': 2, 'adv_epochs': 1, 'pol_epochs': 1
++            'batch_size': 256, 'num_iterations': 100, 'log_interval': 1,
++            'num_traversals': 1, 'adv_epochs': 1, 'pol_epochs': 1, 'max_workers': 6,
+         }
+         self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
+         self.log_interval = config.get('log_every', defaults['log_interval'])
+@@ -115,6 +123,7 @@ class DeepCFRWrapper:
+         self.num_traversals = config.get('num_traversals', defaults['num_traversals'])
+         self.adv_epochs = config.get('adv_epochs', defaults['adv_epochs'])
+         self.pol_epochs = config.get('pol_epochs', defaults['pol_epochs'])
++        self.max_workers = config.get('max_workers', defaults['max_workers'])
+ 
+         # Networks and optimizers
+         self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
+@@ -129,84 +138,86 @@ class DeepCFRWrapper:
+         self.pol_memory = ReplayBuffer(self.pol_mem_size)
+ 
+         self.log_data = {'iter':[], 'policy_loss':[], 'player_rewards':[]}
++
++        self.cpu_count = os.cpu_count() or 1
++        self.executor = ThreadPoolExecutor(max_workers=min(self.cpu_count, self.max_workers))
++        self.lock = threading.Lock()
+   
+     
+     
+-    def _traverse(self, state, target_player, pi=1.0, pi_op=1.0):
+-        # Terminal check
++    def traverse(self, state, target, pi=1.0, pi_op=1.0):
+         if state.is_terminal():
+-            return state.returns()[target_player]
+-
+-        current = state.current_player()
++            return state.returns()[target]
++        cur = state.current_player()
+         obs = state.information_state_tensor()
+         legal = state.legal_actions()
+-        # Build masked policy
+-        inp = torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
++        # masked softmax
++        inp = torch.tensor(np.insert(obs,0,cur),dtype=torch.float32).unsqueeze(0)
+         logits = self.policy_net(inp).squeeze(0)
+         mask = torch.zeros(self.num_actions)
+-        mask[legal] = 1
+-        exp_logits = torch.exp(logits) * mask
+-        policy = exp_logits / exp_logits.sum()
++        mask[legal]=1
++        exp_l = torch.exp(logits)*mask
++        pol = exp_l/exp_l.sum()
+ 
+-        action_idx = torch.multinomial(policy[legal], num_samples=1).item()
+-        action = legal[action_idx]
+-
+-        if current == target_player:
+-            # External sampling: collect advantages for all legal actions
+-            # Predict current advantage values
++        if cur == target:
++            # compute v_all advantage baseline
+             with torch.no_grad():
+-                v_all = self.adv_nets[current](torch.tensor(obs, dtype=torch.float32).unsqueeze(0)).squeeze(0)
+-            # Sample one action for continuation
+-            
++                v_all = self.adv_nets[cur](torch.tensor(obs,dtype=torch.float32).unsqueeze(0)).squeeze(0)
+ 
+-            # Compute utility for each legal action
+-            utilities = {}
+-            #print("start traversal")
+-            #print("current player ", current)
+ 
+-            #print("target player ", target_player)
+-            for a in legal:
+-                next_state = state.clone()
+-                #print(f"Player {target_player} legal action: {a}")
+-                #print(f"Player {next_state.current_player()} legal action: {a}")
+-                #print(f"Player {state.current_player()} legal action: {a}")
+-                #print("next_state")
+-                next_state.apply_action(a)
+-                
+-                utilities[a] = self._traverse(next_state, target_player,
+-                                              pi * policy[a].item(), pi_op)
+-            # Store advantage samples for each action
+-            #print("end traversal")
+-            for a in legal:
+-                adv = (utilities[a] - v_all[a].item()) / pi_op
+-                self.adv_memory[current].push(AdvTransition(obs, a, adv))
+-            #print("end advantage memory push")
+-            # Policy training target
+-            v_np = v_all.detach().cpu().numpy()
+-            mask_arr = np.zeros(self.num_actions)
+-            mask_arr[legal] = 1
+-            adv_pos = np.clip(v_np, 0, None) * mask_arr
+-            if adv_pos.sum() > 0:
+-                pi_target = adv_pos / adv_pos.sum()
+-            else:
+-                pi_target = mask_arr / mask_arr.sum()
+-            self.pol_memory.push(PolTransition(obs, pi_target, current))
++            def worker(a):
++                nxt = state.clone()
++                nxt.apply_action(a)
++                util = self.traverse(nxt, target, pi*pol[a].item(), pi_op)
++                adv = (util - v_all[a].item()) / pi_op
++                with self.lock:
++                    self.adv_memory[cur].push(AdvTransition(obs, a, adv))
++                return a, util
+ 
+-            # Continue down the sampled action
+-            ##next_state = state.clone()
+-            #next_state.apply_action(action)
+-            return utilities[action]
++            # submit tasks
++            futures = [self.executor.submit(worker, a) for a in legal]
++            utilities = {}
++            for f in futures:
++                a, util = f.result()
++                utilities[a] = util
++            # define worker for parallel utility+advantage computation
++            '''def worker(a):
++                nxt = state.clone()
++                nxt.apply_action(a)
++                util = self.traverse(nxt, target, pi*pol[a].item(), pi_op)
++                adv = (util - v_all[a].item()) / pi_op
++                with self.lock:
++                    self.adv_memory[cur].push(AdvTransition(obs, a, adv))
++                return a, util
++
++            # parallel execution over legal actions
++            utilities = {}
++            cpu_count = os.cpu_count() or 1
++            max_workers = min(len(legal), self.max_workers, cpu_count)
++            with ThreadPoolExecutor(max_workers=max_workers) as exe:
++                for a, util in exe.map(worker, legal):
++                    utilities[a] = util'''
++
++        
++            # policy target
++            v_np = v_all.cpu().numpy()
++            mask_arr = np.zeros(self.num_actions); mask_arr[legal]=1
++            adv_pos = np.clip(v_np,0,None)*mask_arr
++            pi_tgt = adv_pos/adv_pos.sum() if adv_pos.sum()>0 else mask_arr/mask_arr.sum()
++            with self.lock:
++                self.pol_memory.push(PolTransition(obs,pi_tgt,cur))
++
++            # sample one action to continue
++            a_samp = legal[torch.multinomial(pol[legal],1).item()]
++            return utilities[a_samp]
+         else:
+-            #print("Opponent node")
+-            # Opponent or chance node: sample one action
+-            action = legal[action_idx]
+-            next_state = state.clone()
+-            next_state.apply_action(action)
+-            return self._traverse(next_state, target_player,
+-                                   pi, pi_op * policy[action].item())
++            # opponent node: sample action
++            a_samp = legal[torch.multinomial(pol[legal],1).item()]
++            nxt = state.clone(); nxt.apply_action(a_samp)
++            return self.traverse(nxt, target, pi, pi_op*pol[a_samp].item())
+ 
+     # (optimization methods remain unchanged)
+-    def _optimize_adv(self, player):
++    def optimize_adv(self, player):
+         if len(self.adv_memory[player]) < self.batch_size:
+             return
+         batch = self.adv_memory[player].sample(self.batch_size)
+@@ -219,7 +230,7 @@ class DeepCFRWrapper:
+         opt = self.adv_opts[player]
+         opt.zero_grad(); loss.backward(); opt.step()
+ 
+-    def _optimize_policy(self):
++    def optimize_policy(self):
+         if len(self.pol_memory) < self.batch_size:
+             return
+         batch = self.pol_memory.sample(self.batch_size)
+@@ -239,13 +250,13 @@ class DeepCFRWrapper:
+             for p in range(self.num_players):
+                 for _ in range(self.num_traversals):
+                     state = CoincheState(players=self.players)
+-                    self._traverse(state, p)
++                    self.traverse(state, p)
+                 # Train advantage network
+                 for _ in range(self.adv_epochs):
+-                    self._optimize_adv(p)
++                    self.optimize_adv(p)
+             # Train policy network
+             for _ in range(self.pol_epochs):
+-                self._optimize_policy()
++                self.optimize_policy()
+             if (it + 1) % self.log_interval == 0:
+                 print(f"[DeepCFR] Iter {it+1}/{self.num_iterations}, "
+                       f"adv sizes={[len(buf) for buf in self.adv_memory]}, "
+@@ -348,7 +359,7 @@ class SingleDeepCFRWrapper:
+         self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
+         self.pol_memory = ReplayBuffer(self.pol_mem_size)
+ 
+-    def _traverse(self, state, target_player, pi=1.0, pi_op=1.0):
++    def traverse(self, state, target_player, pi=1.0, pi_op=1.0):
+         if state.is_terminal():
+             return state.returns()[target_player]
+ 
+@@ -371,7 +382,7 @@ class SingleDeepCFRWrapper:
+ 
+         if current == target_player:
+             # Advantage sampling
+-            u = self._traverse(next_state, target_player, pi * probs[action].item(), pi_op)
++            u = self.traverse(next_state, target_player, pi * probs[action].item(), pi_op)
+             with torch.no_grad():
+                 v = self.adv_nets[current](
+                     torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+@@ -395,12 +406,12 @@ class SingleDeepCFRWrapper:
+             return u
+         else:
+             # Opponent node
+-            return self._traverse(
++            return self.traverse(
+                 next_state, target_player,
+                 pi, pi_op * probs[action].item()
+             )
+ 
+-    def _optimize_adv(self, player):
++    def optimize_adv(self, player):
+         if len(self.adv_memory[player]) < self.batch_size:
+             return
+         batch = self.adv_memory[player].sample(self.batch_size)
+@@ -413,7 +424,7 @@ class SingleDeepCFRWrapper:
+         opt = self.adv_opts[player]
+         opt.zero_grad(); loss.backward(); opt.step()
+ 
+-    def _optimize_policy(self):
++    def optimize_policy(self):
+         if len(self.pol_memory) < self.batch_size:
+             return
+         batch = self.pol_memory.sample(self.batch_size)
+@@ -433,13 +444,13 @@ class SingleDeepCFRWrapper:
+             for p in range(self.num_players):
+                 for _ in range(self.num_traversals):
+                     state = CoincheState(players=self.players)
+-                    self._traverse(state, p)
++                    self.traverse(state, p)
+                 # Train advantage network
+                 for _ in range(self.adv_epochs):
+-                    self._optimize_adv(p)
++                    self.optimize_adv(p)
+             # Train policy network
+             for _ in range(self.pol_epochs):
+-                self._optimize_policy()
++                self.optimize_policy()
+             if (it + 1) % self.log_interval == 0:
+                 print(f"[DeepCFR] Iter {it+1}/{self.num_iterations}, "
+                       f"adv sizes={[len(buf) for buf in self.adv_memory]}, "
+@@ -483,26 +494,7 @@ class SingleDeepCFRWrapper:
+ 
+ 
+ 
+-'''Transition = namedtuple('Transition', ['obs', 'action', 'advantage', 'player', ]) #'pi'
+-class ReplayBuffer:
+-    def __init__(self, capacity):
+-        self.buffer = deque(maxlen=capacity)
+-    def push(self, *args):
+-        self.buffer.append(Transition(*args))
+-    def sample(self, batch_size):
+-        return random.sample(self.buffer, batch_size)
+-    def __len__(self):
+-        return len(self.buffer)
+-
+-def make_mlp(input_dim, output_dim, hidden_sizes):
+-    layers = []
+-    prev = input_dim
+-    for h in hidden_sizes:
+-        layers.append(nn.Linear(prev, h))
+-        layers.append(nn.ReLU())
+-        prev = h
+-    layers.append(nn.Linear(prev, output_dim))
+-    return nn.Sequential(*layers)'''
++Transition = namedtuple('Transition', ['obs', 'action', 'advantage', 'player', ]) #'pi'
+ 
+ class SampleDeepCFRWrapper:
+     def __init__(self, config: dict):
+@@ -558,7 +550,7 @@ class SampleDeepCFRWrapper:
+         self.pol_memory = ReplayBuffer(self.pol_mem_size)
+         
+ 
+-    def _traverse(self, state, target_player, pi=1.0, pi_op=1.0, eps_len=0):
++    def traverse(self, state, target_player, pi=1.0, pi_op=1.0, eps_len=0):
+         #print(eps_len)
+         if state.is_terminal():
+             #print("eps_len: ",eps_len)
+@@ -589,18 +581,9 @@ class SampleDeepCFRWrapper:
+                 print("action_idx", action_idx)
+                 print("legal", legal)
+                 action = legal[action_idx]
+-                '''probs = np.zeros(self.num_actions)
+-                probs[legal] = torch.softmax(logits[legal], dim=0)
+-                #probs = self._masked_softmax(logits, legal)
+-                #print("logits", logits)
+-                print("probs", probs)
+-                print("probs sum", probs.sum())
+-                print("probs legal sum ", probs[legal].sum())
+-                #print(legal)
+-                action = int(np.random.choice(legal, p=probs[legal]))'''
+                 next_state = state.clone()
+                 next_state.apply_action(action)
+-                u = self._traverse(next_state, target_player, pi * probs[action], pi_op, eps_len + 1)
++                u = self.traverse(next_state, target_player, pi * probs[action], pi_op, eps_len + 1)
+                 with torch.no_grad():
+                     v = self.adv_nets[current](torch.tensor(obs, dtype=torch.float32).unsqueeze(0))
+                     v = v.squeeze(0).cpu().numpy()
+@@ -621,20 +604,11 @@ class SampleDeepCFRWrapper:
+         else:
+             action_idx = legal_probs.multinomial(num_samples=1).item()
+             action = legal[action_idx]
+-            '''probs = np.zeros(self.num_actions)
+-            probs[legal] = torch.softmax(logits[legal], dim=0)
+-            #probs = self._masked_softmax(logits, legal)
+-            #print("logits", logits)
+-            print("probs", probs)
+-            print("probs sum", probs.sum())
+-            print("probs legal sum ", probs[legal].sum())
+-            #print(legal)
+-            action = int(np.random.choice(legal, p=probs[legal]))'''
+             next_state = state.clone()
+             next_state.apply_action(action)
+-            return self._traverse(next_state, target_player, pi, pi_op * probs[action], eps_len + 1)
++            return self.traverse(next_state, target_player, pi, pi_op * probs[action], eps_len + 1)
+ 
+-    def _optimize_adv(self, player):
++    def optimize_adv(self, player):
+         if len(self.adv_memory[player]) < self.batch_size:
+             return
+         batch = self.adv_memory[player].sample(self.batch_size)
+@@ -647,7 +621,7 @@ class SampleDeepCFRWrapper:
+         opt = self.adv_opts[player]
+         opt.zero_grad(); loss.backward(); opt.step()
+ 
+-    def _optimize_policy(self):
++    def optimize_policy(self):
+         if len(self.pol_memory) < self.batch_size:
+             return
+         batch = self.pol_memory.sample(self.batch_size)
+@@ -663,20 +637,14 @@ class SampleDeepCFRWrapper:
+ 
+     def learn(self, total_timesteps, callback=None, use_masking=False):
+         for it in range(total_timesteps):
+-            #print(f"[DeepCFR] Iter {it+1}/{total_timesteps}")
+-            '''self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
+-                             for _ in range(self.num_players)]
+-            self.adv_opts = [optim.Adam(net.parameters(), lr=self.adv_lr)
+-                             for net in self.adv_nets]
+-            self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]'''
+             for player in range(self.num_players):
+                 for _ in range(self.num_traversals):
+                     state = CoincheState(players=self.players)
+                     #print()
+-                    self._traverse(state, player)
++                    self.traverse(state, player)
+                     #state 
+-                self._optimize_adv(player)
+-            self._optimize_policy()
++                self.optimize_adv(player)
++            self.optimize_policy()
+             if (it + 1) % self.log_interval == 0:
+                 print(f"[DeepCFR] Iter {it+1}/{self.num_iterations}, adv_sizes={[len(buf) for buf in self.adv_memory]}, pol_size={len(self.pol_memory)}")
+                 print(f"[DeepCFR] Policy: {self.evaluate_policy(self.policy_net)}") 
+@@ -741,11 +709,11 @@ class OnlineCFRWrapper:
+     def learn(self, total_timesteps, callback=None, use_masking=False):
+         for t in range(1, total_timesteps + 1):
+             state = CoincheState(players=self.players)
+-            self._cfr(state)
++            self.cfr(state)
+             if t % 100 == 0:
+                 print(f"Online CFR Iteration {t}/{total_timesteps} done.")
+ 
+-    def _get_strategy(self, player_id, legal_actions):
++    def get_strategy(self, player_id, legal_actions):
+         positive_regrets = np.maximum(self.regrets[player_id], 0)
+         total = positive_regrets[legal_actions].sum()
+         if total > 0:
+@@ -756,19 +724,19 @@ class OnlineCFRWrapper:
+         self.strategy_sum[player_id] += strat
+         return strat
+ 
+-    def _cfr(self, state, pi=1.0):
++    def cfr(self, state, pi=1.0):
+         if state.is_terminal():
+             return state.returns()
+         player = state.current_player()
+         legal = state.legal_actions()
+-        strategy = self._get_strategy(player, legal)
++        strategy = self.get_strategy(player, legal)
+         util = np.zeros((self.num_players,))
+         node_util = 0.0
+         # For each action, recurse and accumulate
+         for a in legal:
+             next_state = state.clone()
+             next_state.apply_action(a)
+-            ret = self._cfr(next_state, pi * strategy[a])
++            ret = self.cfr(next_state, pi * strategy[a])
+             util[a] = ret[player]
+             node_util += strategy[a] * ret[player]
+         # Update regrets
+diff --git a/wandb/latest-run b/wandb/latest-run
+index 7f804c0..91750d6 120000
+--- a/wandb/latest-run
++++ b/wandb/latest-run
+@@ -1 +1 @@
+-run-20250426_211351-qxfklgvb
+\ No newline at end of file
++run-20250429_220810-7eac369q
+\ No newline at end of file

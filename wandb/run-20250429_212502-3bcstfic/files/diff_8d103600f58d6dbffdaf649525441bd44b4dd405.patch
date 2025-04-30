@@ -1,0 +1,186 @@
+diff --git a/train/config.yaml b/train/config.yaml
+index 76d5d85..f224988 100644
+--- a/train/config.yaml
++++ b/train/config.yaml
+@@ -1,6 +1,6 @@
+ project_name: coincheadversarial
+ 
+-wandb: False
++wandb: True
+ algorithm: DCFR #PPO
+ policy: MlpPolicy
+ env_id: coinche-v4
+diff --git a/train/wrapper.py b/train/wrapper.py
+index 76fc1f7..8702fab 100644
+--- a/train/wrapper.py
++++ b/train/wrapper.py
+@@ -10,6 +10,10 @@ import torch.optim as optim
+ from collections import deque, namedtuple
+ import random
+ import wandb
++from collections import deque, namedtuple
++from concurrent.futures import ThreadPoolExecutor
++import threading
++import os
+ 
+ 
+ class CoincheState:
+@@ -77,6 +81,7 @@ def make_mlp(input_dim, output_dim, hidden_sizes):
+ class DeepCFRWrapper:
+     def __init__(self, config: dict):
+         # Setup players (self-play, random or deterministic opponents)
++        self.lock = threading.Lock()
+         cfr_players = config.get('cfr_players', 'self_play')
+         if cfr_players == 'self_play':
+             self.players = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
+@@ -100,8 +105,8 @@ class DeepCFRWrapper:
+         defaults = {
+             'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
+             'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
+-            'batch_size': 256, 'num_iterations': 10000, 'log_interval': 1,
+-            'num_traversals': 2, 'adv_epochs': 1, 'pol_epochs': 1
++            'batch_size': 256, 'num_iterations': 100, 'log_interval': 1,
++            'num_traversals': 1, 'adv_epochs': 1, 'pol_epochs': 1, 'max_workers': 6,
+         }
+         self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
+         self.log_interval = config.get('log_every', defaults['log_interval'])
+@@ -115,6 +120,7 @@ class DeepCFRWrapper:
+         self.num_traversals = config.get('num_traversals', defaults['num_traversals'])
+         self.adv_epochs = config.get('adv_epochs', defaults['adv_epochs'])
+         self.pol_epochs = config.get('pol_epochs', defaults['pol_epochs'])
++        self.max_workers = config.get('max_workers', defaults['max_workers'])
+ 
+         # Networks and optimizers
+         self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
+@@ -132,78 +138,59 @@ class DeepCFRWrapper:
+   
+     
+     
+-    def _traverse(self, state, target_player, pi=1.0, pi_op=1.0):
+-        # Terminal check
++    def _traverse(self, state, target, pi=1.0, pi_op=1.0):
+         if state.is_terminal():
+-            return state.returns()[target_player]
+-
+-        current = state.current_player()
++            return state.returns()[target]
++        cur = state.current_player()
+         obs = state.information_state_tensor()
+         legal = state.legal_actions()
+-        # Build masked policy
+-        inp = torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
++        # masked softmax
++        inp = torch.tensor(np.insert(obs,0,cur),dtype=torch.float32).unsqueeze(0)
+         logits = self.policy_net(inp).squeeze(0)
+         mask = torch.zeros(self.num_actions)
+-        mask[legal] = 1
+-        exp_logits = torch.exp(logits) * mask
+-        policy = exp_logits / exp_logits.sum()
+-
+-        action_idx = torch.multinomial(policy[legal], num_samples=1).item()
+-        action = legal[action_idx]
++        mask[legal]=1
++        exp_l = torch.exp(logits)*mask
++        pol = exp_l/exp_l.sum()
+ 
+-        if current == target_player:
+-            # External sampling: collect advantages for all legal actions
+-            # Predict current advantage values
++        if cur == target:
++            # compute v_all advantage baseline
+             with torch.no_grad():
+-                v_all = self.adv_nets[current](torch.tensor(obs, dtype=torch.float32).unsqueeze(0)).squeeze(0)
+-            # Sample one action for continuation
+-            
+-
+-            # Compute utility for each legal action
++                v_all = self.adv_nets[cur](torch.tensor(obs,dtype=torch.float32).unsqueeze(0)).squeeze(0)
++
++            # define worker for parallel utility+advantage computation
++            def worker(a):
++                nxt = state.clone()
++                nxt.apply_action(a)
++                util = self._traverse(nxt, target, pi*pol[a].item(), pi_op)
++                adv = (util - v_all[a].item()) / pi_op
++                with self.lock:
++                    self.adv_memory[cur].push(AdvTransition(obs, a, adv))
++                return a, util
++
++            # parallel execution over legal actions
+             utilities = {}
+-            #print("start traversal")
+-            #print("current player ", current)
+-
+-            #print("target player ", target_player)
+-            for a in legal:
+-                next_state = state.clone()
+-                #print(f"Player {target_player} legal action: {a}")
+-                #print(f"Player {next_state.current_player()} legal action: {a}")
+-                #print(f"Player {state.current_player()} legal action: {a}")
+-                #print("next_state")
+-                next_state.apply_action(a)
+-                
+-                utilities[a] = self._traverse(next_state, target_player,
+-                                              pi * policy[a].item(), pi_op)
+-            # Store advantage samples for each action
+-            #print("end traversal")
+-            for a in legal:
+-                adv = (utilities[a] - v_all[a].item()) / pi_op
+-                self.adv_memory[current].push(AdvTransition(obs, a, adv))
+-            #print("end advantage memory push")
+-            # Policy training target
+-            v_np = v_all.detach().cpu().numpy()
+-            mask_arr = np.zeros(self.num_actions)
+-            mask_arr[legal] = 1
+-            adv_pos = np.clip(v_np, 0, None) * mask_arr
+-            if adv_pos.sum() > 0:
+-                pi_target = adv_pos / adv_pos.sum()
+-            else:
+-                pi_target = mask_arr / mask_arr.sum()
+-            self.pol_memory.push(PolTransition(obs, pi_target, current))
+-
+-            # Continue down the sampled action
+-            ##next_state = state.clone()
+-            #next_state.apply_action(action)
+-            return utilities[action]
++            cpu_count = os.cpu_count() or 1
++            max_workers = min(len(legal), self.max_workers, cpu_count)
++            with ThreadPoolExecutor(max_workers=max_workers) as exe:
++                for a, util in exe.map(worker, legal):
++                    utilities[a] = util
++
++            # policy target
++            v_np = v_all.cpu().numpy()
++            mask_arr = np.zeros(self.num_actions); mask_arr[legal]=1
++            adv_pos = np.clip(v_np,0,None)*mask_arr
++            pi_tgt = adv_pos/adv_pos.sum() if adv_pos.sum()>0 else mask_arr/mask_arr.sum()
++            with self.lock:
++                self.pol_memory.push(PolTransition(obs,pi_tgt,cur))
++
++            # sample one action to continue
++            a_samp = legal[torch.multinomial(pol[legal],1).item()]
++            return utilities[a_samp]
+         else:
+-            #print("Opponent node")
+-            # Opponent or chance node: sample one action
+-            action = legal[action_idx]
+-            next_state = state.clone()
+-            next_state.apply_action(action)
+-            return self._traverse(next_state, target_player,
+-                                   pi, pi_op * policy[action].item())
++            # opponent node: sample action
++            a_samp = legal[torch.multinomial(pol[legal],1).item()]
++            nxt = state.clone(); nxt.apply_action(a_samp)
++            return self._traverse(nxt, target, pi, pi_op*pol[a_samp].item())
+ 
+     # (optimization methods remain unchanged)
+     def _optimize_adv(self, player):
+diff --git a/wandb/latest-run b/wandb/latest-run
+index 7f804c0..f11c08c 120000
+--- a/wandb/latest-run
++++ b/wandb/latest-run
+@@ -1 +1 @@
+-run-20250426_211351-qxfklgvb
+\ No newline at end of file
++run-20250429_212502-3bcstfic
+\ No newline at end of file
