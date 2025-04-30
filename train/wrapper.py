@@ -325,7 +325,7 @@ class DeepCFRWrapper:
         results = {
             'avg_eps': np.mean(eps_len),
             'avg_reward': total / num_episodes}
-        return total / num_episodes, 
+        return results 
 
 
 
