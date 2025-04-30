@@ -50,7 +50,7 @@ class GymCoinche(Env):
         self.linear_reward_increase = False
 
         self.curriculum_bounds = [0, 20000, 20000]
-        self.curriculum_masking = True
+        self.curriculum_masking = False
 
         self.deck = Deck()
         self.round_number = 0
@@ -128,9 +128,9 @@ class GymCoinche(Env):
         if self.current_bid is None and len(self.bids) >= 4:
             # Everyone passed without bid: end of the round, bad reward to everyone
             obs = self._get_current_observation()
-            reward = -10
+            reward = -1000
             info = self.original_hands
-            info["total_reward"] = -10
+            info["total_reward"] = reward
             terminated = True
             self.bidding_done = True
             return obs, reward, terminated, False, info

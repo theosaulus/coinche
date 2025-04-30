@@ -4,7 +4,7 @@ debugging: False           # Disables parallelization to allow breakpoints
 algorithm: PPO
 policy: MlpPolicy
 env_id: coinche-v8
-total_timesteps: 1_000_000
+total_timesteps: 10_000_000
 
 log_every: 500
 checkpoint_every: 5_000      # Save model every N steps
@@ -15,8 +15,8 @@ log_game_metrics: true      # Log contract, suit, etc.
 save_game_replays: true     # Save replays for analysis
 print_score_stats: true
 
-num_envs: 32
-n_steps: 256
+num_envs: 64
+n_steps: 512
 batch_size: 512
 n_epochs: 10
 
