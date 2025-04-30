@@ -9,6 +9,8 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque, namedtuple
 import random
+import wandb
+
 
 class CoincheState:
     def __init__(self, players=None, reset=True):
@@ -41,14 +43,447 @@ class CoincheState:
         return self.observation_tensor()
 
     def clone(self):
-        new_players = [p for p in self.env.players]
+        new_players = [p.clone() for p in self.env.players]
         cloned = CoincheState(new_players, reset=False)
-        cloned.env = self.env.clone()
+        cloned.env = self.env.clone(new_players)
         cloned._observation = np.copy(self._observation)
         cloned._terminated = self._terminated
         return cloned
 
-Transition = namedtuple('Transition', ['obs', 'action', 'advantage', 'player'])
+# Transitions for advantage and policy memories
+AdvTransition = namedtuple('AdvTransition', ['obs', 'action', 'advantage'])
+PolTransition = namedtuple('PolTransition', ['obs', 'pi_target', 'player'])
+
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+    def push(self, item):
+        self.buffer.append(item)
+    def sample(self, batch_size):
+        return random.sample(self.buffer, batch_size)
+    def __len__(self):
+        return len(self.buffer)
+
+def make_mlp(input_dim, output_dim, hidden_sizes):
+    layers = []
+    prev = input_dim
+    for h in hidden_sizes:
+        layers.append(nn.Linear(prev, h))
+        layers.append(nn.ReLU())
+        prev = h
+    layers.append(nn.Linear(prev, output_dim))
+    return nn.Sequential(*layers)
+
+class DeepCFRWrapper:
+    def __init__(self, config: dict):
+        # Setup players (self-play, random or deterministic opponents)
+        cfr_players = config.get('cfr_players', 'self_play')
+        if cfr_players == 'self_play':
+            self.players = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
+        elif cfr_players == 'random_opponent':
+            self.players = [GymPlayer(0, "N"), RandomPlayer(1, "E"),
+                            GymPlayer(2, "S"), RandomPlayer(3, "W")]
+        elif cfr_players == 'det_opponent':
+            self.players = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"),
+                            GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
+        else:
+            raise ValueError("Invalid player configuration.")
+
+        # Initialize state template to get dims
+        template = CoincheState(players=self.players, reset=False)
+        obs0 = template.observation_tensor()
+        self.obs_dim = obs0.shape[0]
+        self.num_players = len(template.returns())
+        self.num_actions = template.env.action_space.n
+
+        # Hyperparameters and defaults
+        defaults = {
+            'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
+            'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
+            'batch_size': 256, 'num_iterations': 10000, 'log_interval': 1,
+            'num_traversals': 2, 'adv_epochs': 1, 'pol_epochs': 1
+        }
+        self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
+        self.log_interval = config.get('log_every', defaults['log_interval'])
+        self.batch_size = config.get('batch_size', defaults['batch_size'])
+        self.adv_hidden = config.get('adv_hidden', defaults['adv_hidden'])
+        self.adv_lr = config.get('adv_lr', defaults['adv_lr'])
+        self.adv_mem_size = config.get('adv_mem_size', defaults['adv_mem_size'])
+        self.pol_hidden = config.get('pol_hidden', defaults['pol_hidden'])
+        self.pol_lr = config.get('pol_lr', defaults['pol_lr'])
+        self.pol_mem_size = config.get('pol_mem_size', defaults['pol_mem_size'])
+        self.num_traversals = config.get('num_traversals', defaults['num_traversals'])
+        self.adv_epochs = config.get('adv_epochs', defaults['adv_epochs'])
+        self.pol_epochs = config.get('pol_epochs', defaults['pol_epochs'])
+
+        # Networks and optimizers
+        self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
+                         for _ in range(self.num_players)]
+        self.adv_opts = [optim.Adam(net.parameters(), lr=self.adv_lr)
+                         for net in self.adv_nets]
+        self.policy_net = make_mlp(self.obs_dim + 1, self.num_actions, self.pol_hidden)
+        self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=self.pol_lr)
+
+        # Memories
+        self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
+        self.pol_memory = ReplayBuffer(self.pol_mem_size)
+
+        self.log_data = {'iter':[], 'policy_loss':[], 'player_rewards':[]}
+  
+    
+    
+    def _traverse(self, state, target_player, pi=1.0, pi_op=1.0):
+        # Terminal check
+        if state.is_terminal():
+            return state.returns()[target_player]
+
+        current = state.current_player()
+        obs = state.information_state_tensor()
+        legal = state.legal_actions()
+        # Build masked policy
+        inp = torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
+        logits = self.policy_net(inp).squeeze(0)
+        mask = torch.zeros(self.num_actions)
+        mask[legal] = 1
+        exp_logits = torch.exp(logits) * mask
+        policy = exp_logits / exp_logits.sum()
+
+        action_idx = torch.multinomial(policy[legal], num_samples=1).item()
+        action = legal[action_idx]
+
+        if current == target_player:
+            # External sampling: collect advantages for all legal actions
+            # Predict current advantage values
+            with torch.no_grad():
+                v_all = self.adv_nets[current](torch.tensor(obs, dtype=torch.float32).unsqueeze(0)).squeeze(0)
+            # Sample one action for continuation
+            
+
+            # Compute utility for each legal action
+            utilities = {}
+            #print("start traversal")
+            #print("current player ", current)
+
+            #print("target player ", target_player)
+            for a in legal:
+                next_state = state.clone()
+                #print(f"Player {target_player} legal action: {a}")
+                #print(f"Player {next_state.current_player()} legal action: {a}")
+                #print(f"Player {state.current_player()} legal action: {a}")
+                #print("next_state")
+                next_state.apply_action(a)
+                
+                utilities[a] = self._traverse(next_state, target_player,
+                                              pi * policy[a].item(), pi_op)
+            # Store advantage samples for each action
+            #print("end traversal")
+            for a in legal:
+                adv = (utilities[a] - v_all[a].item()) / pi_op
+                self.adv_memory[current].push(AdvTransition(obs, a, adv))
+            #print("end advantage memory push")
+            # Policy training target
+            v_np = v_all.detach().cpu().numpy()
+            mask_arr = np.zeros(self.num_actions)
+            mask_arr[legal] = 1
+            adv_pos = np.clip(v_np, 0, None) * mask_arr
+            if adv_pos.sum() > 0:
+                pi_target = adv_pos / adv_pos.sum()
+            else:
+                pi_target = mask_arr / mask_arr.sum()
+            self.pol_memory.push(PolTransition(obs, pi_target, current))
+
+            # Continue down the sampled action
+            ##next_state = state.clone()
+            #next_state.apply_action(action)
+            return utilities[action]
+        else:
+            #print("Opponent node")
+            # Opponent or chance node: sample one action
+            action = legal[action_idx]
+            next_state = state.clone()
+            next_state.apply_action(action)
+            return self._traverse(next_state, target_player,
+                                   pi, pi_op * policy[action].item())
+
+    # (optimization methods remain unchanged)
+    def _optimize_adv(self, player):
+        if len(self.adv_memory[player]) < self.batch_size:
+            return
+        batch = self.adv_memory[player].sample(self.batch_size)
+        obs = torch.stack([torch.tensor(b.obs, dtype=torch.float32) for b in batch])
+        acts = torch.tensor([b.action for b in batch], dtype=torch.long)
+        advs = torch.tensor([b.advantage for b in batch], dtype=torch.float32)
+        preds = self.adv_nets[player](obs)
+        chosen = preds.gather(1, acts.unsqueeze(1)).squeeze(1)
+        loss = nn.MSELoss()(chosen, advs)
+        opt = self.adv_opts[player]
+        opt.zero_grad(); loss.backward(); opt.step()
+
+    def _optimize_policy(self):
+        if len(self.pol_memory) < self.batch_size:
+            return
+        batch = self.pol_memory.sample(self.batch_size)
+        obs_inputs = np.array([np.insert(b.obs, 0, b.player) for b in batch], dtype=np.float32)
+        obs_batch = torch.tensor(obs_inputs, dtype=torch.float32)
+        pi_targets = torch.tensor([b.pi_target for b in batch], dtype=torch.float32)
+        logits = self.policy_net(obs_batch)
+        pred_pi = torch.softmax(logits, dim=1)
+        loss = nn.MSELoss()(pred_pi, pi_targets)
+        self.policy_opt.zero_grad(); loss.backward(); self.policy_opt.step()
+
+    def learn(self, total_timesteps, callback=None, use_masking=False):
+        for it in range(self.num_iterations):
+            # Reset advantage memory
+            self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
+            # Collect advantage samples
+            for p in range(self.num_players):
+                for _ in range(self.num_traversals):
+                    state = CoincheState(players=self.players)
+                    self._traverse(state, p)
+                # Train advantage network
+                for _ in range(self.adv_epochs):
+                    self._optimize_adv(p)
+            # Train policy network
+            for _ in range(self.pol_epochs):
+                self._optimize_policy()
+            if (it + 1) % self.log_interval == 0:
+                print(f"[DeepCFR] Iter {it+1}/{self.num_iterations}, "
+                      f"adv sizes={[len(buf) for buf in self.adv_memory]}, "
+                      f"pol size={len(self.pol_memory)}")
+                print(f"[DeepCFR] Policy: {self.evaluate_policy(self.policy_net)}") 
+
+
+    def get_policy(self):
+        return self.policy_net
+
+    def save(self, prefix):
+        for i, net in enumerate(self.adv_nets):
+            torch.save(net.state_dict(), f"{prefix}_adv_{i}.pt")
+        torch.save(self.policy_net.state_dict(), f"{prefix}_policy.pt")
+
+    def evaluate_policy(self, policy, num_episodes=50):
+        total = np.zeros(self.num_players)
+        logger = {}
+        eps_len = []
+        for _ in range(num_episodes):
+            state = CoincheState(players=self.players)
+            eps_len_temp = 0
+            while not state.is_terminal():
+                eps_len_temp += 1
+                current = state.current_player()
+                obs = state.information_state_tensor()
+                logits = policy(
+                    torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
+                ).squeeze(0)
+                legal = state.legal_actions()
+                mask = torch.zeros(self.num_actions)
+                mask[legal] = 1
+                unscaled = torch.exp(logits) * mask
+                probs = (unscaled / unscaled.sum()).detach().cpu().numpy()
+                action = legal[np.argmax(probs[legal])]
+                state.apply_action(action)
+            total += np.array(state.returns(), dtype=float)
+            eps_len.append(eps_len_temp)
+        print(f"Average episode length: {np.mean(eps_len)}")
+        return total / num_episodes
+
+
+
+class SingleDeepCFRWrapper:
+    def __init__(self, config: dict):
+        # Setup players
+        cfr_players = config.get('cfr_players', 'self_play')
+        if cfr_players == 'self_play':
+            self.players = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
+        elif cfr_players == 'random_opponent':
+            self.players = [GymPlayer(0, "N"), RandomPlayer(1, "E"),
+                            GymPlayer(2, "S"), RandomPlayer(3, "W")]
+        elif cfr_players == 'det_opponent':
+            self.players = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"),
+                            GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
+        else:
+            raise ValueError("Invalid player configuration.")
+
+        # Determine dimensions
+        template = CoincheState(players=self.players, reset=False)
+        obs0 = template.observation_tensor()
+        self.obs_dim = obs0.shape[0]
+        self.num_players = len(template.returns())
+        self.num_actions = template.env.action_space.n
+
+        # Hyperparameters
+        defaults = {
+            'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
+            'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
+            'batch_size': 256, 'num_iterations': 10000, 'log_interval': 10,
+            'num_traversals': 512, 'adv_epochs': 16, 'pol_epochs': 16
+        }
+        self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
+        self.log_interval = config.get('log_every', defaults['log_interval'])
+        self.batch_size = config.get('batch_size', defaults['batch_size'])
+        self.adv_hidden = config.get('adv_hidden', defaults['adv_hidden'])
+        self.adv_lr = config.get('adv_lr', defaults['adv_lr'])
+        self.adv_mem_size = config.get('adv_mem_size', defaults['adv_mem_size'])
+        self.pol_hidden = config.get('pol_hidden', defaults['pol_hidden'])
+        self.pol_lr = config.get('pol_lr', defaults['pol_lr'])
+        self.pol_mem_size = config.get('pol_mem_size', defaults['pol_mem_size'])
+        self.num_traversals = config.get('num_traversals', defaults['num_traversals'])
+        self.adv_epochs = config.get('adv_epochs', defaults['adv_epochs'])
+        self.pol_epochs = config.get('pol_epochs', defaults['pol_epochs'])
+
+        # Networks and optimizers
+        self.adv_nets = [
+            make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
+            for _ in range(self.num_players)
+        ]
+        self.adv_opts = [
+            optim.Adam(net.parameters(), lr=self.adv_lr)
+            for net in self.adv_nets
+        ]
+        # Policy net inputs obs + player id
+        self.policy_net = make_mlp(self.obs_dim + 1, self.num_actions, self.pol_hidden)
+        self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=self.pol_lr)
+
+        # Memories (advantage reset each iter, policy accumulates)
+        self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
+        self.pol_memory = ReplayBuffer(self.pol_mem_size)
+
+    def _traverse(self, state, target_player, pi=1.0, pi_op=1.0):
+        if state.is_terminal():
+            return state.returns()[target_player]
+
+        current = state.current_player()
+        obs = state.information_state_tensor()
+        legal = state.legal_actions()
+        # Policy logits and masked softmax
+        inp = torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
+        logits = self.policy_net(inp).squeeze(0)
+        mask = torch.zeros(self.num_actions)
+        mask[legal] = 1
+        exp_logits = torch.exp(logits) * mask
+        probs = exp_logits / exp_logits.sum()
+
+        action_idx = torch.multinomial(probs[legal], num_samples=1).item()
+        action = legal[action_idx]
+
+        next_state = state.clone()
+        next_state.apply_action(action)
+
+        if current == target_player:
+            # Advantage sampling
+            u = self._traverse(next_state, target_player, pi * probs[action].item(), pi_op)
+            with torch.no_grad():
+                v = self.adv_nets[current](
+                    torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                ).squeeze(0)
+            advantage = (u - v[action].item()) / pi_op
+            self.adv_memory[current].push(
+                AdvTransition(obs, action, advantage)
+            )
+            # Policy target
+            v_np = v.detach().cpu().numpy()
+            mask_arr = np.zeros(self.num_actions)
+            mask_arr[legal] = 1
+            adv_pos = np.clip(v_np, 0, None) * mask_arr
+            if adv_pos.sum() > 0:
+                pi_target = adv_pos / adv_pos.sum()
+            else:
+                pi_target = mask_arr / mask_arr.sum()
+            self.pol_memory.push(
+                PolTransition(obs, pi_target, current)
+            )
+            return u
+        else:
+            # Opponent node
+            return self._traverse(
+                next_state, target_player,
+                pi, pi_op * probs[action].item()
+            )
+
+    def _optimize_adv(self, player):
+        if len(self.adv_memory[player]) < self.batch_size:
+            return
+        batch = self.adv_memory[player].sample(self.batch_size)
+        obs = torch.stack([torch.tensor(b.obs, dtype=torch.float32) for b in batch])
+        acts = torch.tensor([b.action for b in batch], dtype=torch.long)
+        advs = torch.tensor([b.advantage for b in batch], dtype=torch.float32)
+        preds = self.adv_nets[player](obs)
+        chosen = preds.gather(1, acts.unsqueeze(1)).squeeze(1)
+        loss = nn.MSELoss()(chosen, advs)
+        opt = self.adv_opts[player]
+        opt.zero_grad(); loss.backward(); opt.step()
+
+    def _optimize_policy(self):
+        if len(self.pol_memory) < self.batch_size:
+            return
+        batch = self.pol_memory.sample(self.batch_size)
+        obs_inputs = np.array([np.insert(b.obs, 0, b.player) for b in batch], dtype=np.float32)
+        obs_batch = torch.tensor(obs_inputs, dtype=torch.float32)
+        pi_targets = torch.tensor([b.pi_target for b in batch], dtype=torch.float32)
+        logits = self.policy_net(obs_batch)
+        pred_pi = torch.softmax(logits, dim=1)
+        loss = nn.MSELoss()(pred_pi, pi_targets)
+        self.policy_opt.zero_grad(); loss.backward(); self.policy_opt.step()
+
+    def learn(self, total_timesteps, callback=None, use_masking=False):
+        for it in range(self.num_iterations):
+            # Reset advantage memory each iteration
+            self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
+            # Collect advantage samples
+            for p in range(self.num_players):
+                for _ in range(self.num_traversals):
+                    state = CoincheState(players=self.players)
+                    self._traverse(state, p)
+                # Train advantage network
+                for _ in range(self.adv_epochs):
+                    self._optimize_adv(p)
+            # Train policy network
+            for _ in range(self.pol_epochs):
+                self._optimize_policy()
+            if (it + 1) % self.log_interval == 0:
+                print(f"[DeepCFR] Iter {it+1}/{self.num_iterations}, "
+                      f"adv sizes={[len(buf) for buf in self.adv_memory]}, "
+                      f"pol size={len(self.pol_memory)}")
+                print(f"[DeepCFR] Policy: {self.evaluate_policy(self.policy_net)}") 
+
+
+    def get_policy(self):
+        return self.policy_net
+
+    def save(self, prefix):
+        for i, net in enumerate(self.adv_nets):
+            torch.save(net.state_dict(), f"{prefix}_adv_{i}.pt")
+        torch.save(self.policy_net.state_dict(), f"{prefix}_policy.pt")
+
+    def evaluate_policy(self, policy, num_episodes=50):
+        total = np.zeros(self.num_players)
+        #logger = {}
+        eps_len = []
+        for _ in range(num_episodes):
+            state = CoincheState(players=self.players)
+            eps_len_temp = 0
+            while not state.is_terminal():
+                eps_len_temp += 1
+                current = state.current_player()
+                obs = state.information_state_tensor()
+                logits = policy(
+                    torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
+                ).squeeze(0)
+                legal = state.legal_actions()
+                mask = torch.zeros(self.num_actions)
+                mask[legal] = 1
+                unscaled = torch.exp(logits) * mask
+                probs = (unscaled / unscaled.sum()).detach().cpu().numpy()
+                action = legal[np.argmax(probs[legal])]
+                state.apply_action(action)
+            total += np.array(state.returns(), dtype=float)
+            eps_len.append(eps_len_temp)
+        print(f"Average episode length: {np.mean(eps_len)}")
+        return total / num_episodes
+
+
+
+'''Transition = namedtuple('Transition', ['obs', 'action', 'advantage', 'player', ]) #'pi'
 class ReplayBuffer:
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
@@ -67,10 +502,9 @@ def make_mlp(input_dim, output_dim, hidden_sizes):
         layers.append(nn.ReLU())
         prev = h
     layers.append(nn.Linear(prev, output_dim))
-    return nn.Sequential(*layers)
+    return nn.Sequential(*layers)'''
 
-
-class DeepCFRWrapper:
+class SampleDeepCFRWrapper:
     def __init__(self, config: dict):
         if config.get('cfr_players') is not None:
             if config['cfr_players'] == 'self_play':
@@ -95,7 +529,7 @@ class DeepCFRWrapper:
             'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
             'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
             'batch_size': 256, 'num_iterations': 10000, 'log_interval': 10,
-            'num_traversals': 256,
+            'num_traversals': 512, 'num_samples': 5
         }
         self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
         self.log_interval = config.get('log_every', defaults['log_interval'])
@@ -109,6 +543,7 @@ class DeepCFRWrapper:
         self.pol_mem_size = config.get('pol_mem_size', defaults['pol_mem_size'])
 
         self.num_traversals = defaults['num_traversals']
+        self.num_samples = defaults['num_samples']
 
         # Networks and optimizers
         self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
@@ -146,38 +581,57 @@ class DeepCFRWrapper:
         #print("probs", probs)
         #print("probs sum", probs.sum().item())
         #print("probs legal sum ", probs[legal].sum().item())
-        action_idx = legal_probs.multinomial(num_samples=1).item()
-        action = legal[action_idx]
-        '''probs = np.zeros(self.num_actions)
-        probs[legal] = torch.softmax(logits[legal], dim=0)
-        #probs = self._masked_softmax(logits, legal)
-        #print("logits", logits)
-        print("probs", probs)
-        print("probs sum", probs.sum())
-        print("probs legal sum ", probs[legal].sum())
-        #print(legal)
-        action = int(np.random.choice(legal, p=probs[legal]))'''
-        next_state = state.clone()
-        next_state.apply_action(action)
 
         if current == target_player:
-            u = self._traverse(next_state, target_player, pi * probs[action], pi_op, eps_len + 1)
-            with torch.no_grad():
-                v = self.adv_nets[current](torch.tensor(obs, dtype=torch.float32).unsqueeze(0))
-                v = v.squeeze(0).cpu().numpy()
-            advantage = (u - v[action]) / pi_op
-            self.adv_memory[current].push(obs, action, advantage, current)
-            # policy target
-            mask_arr = np.zeros_like(v)
-            mask_arr[legal] = 1
-            adv_pos = np.clip(v, 0, None) * mask_arr
-            if adv_pos.sum() > 0:
-                pi_target = adv_pos / adv_pos.sum()
-            else:
-                pi_target = mask_arr / mask_arr.sum()
-            self.pol_memory.push(obs, pi_target, None, current)
-            return u
+            u_max = None
+            for i in range(self.num_samples):
+                action_idx = legal_probs.multinomial(num_samples=1).item()
+                print("action_idx", action_idx)
+                print("legal", legal)
+                action = legal[action_idx]
+                '''probs = np.zeros(self.num_actions)
+                probs[legal] = torch.softmax(logits[legal], dim=0)
+                #probs = self._masked_softmax(logits, legal)
+                #print("logits", logits)
+                print("probs", probs)
+                print("probs sum", probs.sum())
+                print("probs legal sum ", probs[legal].sum())
+                #print(legal)
+                action = int(np.random.choice(legal, p=probs[legal]))'''
+                next_state = state.clone()
+                next_state.apply_action(action)
+                u = self._traverse(next_state, target_player, pi * probs[action], pi_op, eps_len + 1)
+                with torch.no_grad():
+                    v = self.adv_nets[current](torch.tensor(obs, dtype=torch.float32).unsqueeze(0))
+                    v = v.squeeze(0).cpu().numpy()
+                advantage = (u - v[action]) / pi_op
+                self.adv_memory[current].push(obs, action, advantage, current)
+                # policy target
+                mask_arr = np.zeros_like(v)
+                mask_arr[legal] = 1
+                adv_pos = np.clip(v, 0, None) * mask_arr
+                if adv_pos.sum() > 0:
+                    pi_target = adv_pos / adv_pos.sum()
+                else:
+                    pi_target = mask_arr / mask_arr.sum()
+                #print("pi_target", pi_target)
+                self.pol_memory.push(obs, pi_target, None, current)
+                u_max = u if u_max is None else max(u, u_max)
+            return u_max
         else:
+            action_idx = legal_probs.multinomial(num_samples=1).item()
+            action = legal[action_idx]
+            '''probs = np.zeros(self.num_actions)
+            probs[legal] = torch.softmax(logits[legal], dim=0)
+            #probs = self._masked_softmax(logits, legal)
+            #print("logits", logits)
+            print("probs", probs)
+            print("probs sum", probs.sum())
+            print("probs legal sum ", probs[legal].sum())
+            #print(legal)
+            action = int(np.random.choice(legal, p=probs[legal]))'''
+            next_state = state.clone()
+            next_state.apply_action(action)
             return self._traverse(next_state, target_player, pi, pi_op * probs[action], eps_len + 1)
 
     def _optimize_adv(self, player):
@@ -210,11 +664,11 @@ class DeepCFRWrapper:
     def learn(self, total_timesteps, callback=None, use_masking=False):
         for it in range(total_timesteps):
             #print(f"[DeepCFR] Iter {it+1}/{total_timesteps}")
-            self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
+            '''self.adv_nets = [make_mlp(self.obs_dim, self.num_actions, self.adv_hidden)
                              for _ in range(self.num_players)]
             self.adv_opts = [optim.Adam(net.parameters(), lr=self.adv_lr)
                              for net in self.adv_nets]
-            self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
+            self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]'''
             for player in range(self.num_players):
                 for _ in range(self.num_traversals):
                     state = CoincheState(players=self.players)

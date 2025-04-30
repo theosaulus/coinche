@@ -96,6 +96,7 @@ class GymCoinche(Env):
         self.played_tricks = []
         self._play_until_end_of_rotation_or_ai_play()
         return self._get_current_observation(), {}
+        
 
 
     def step(self, action):
@@ -525,14 +526,14 @@ class GymCoinche(Env):
         return score * trick_score_factor
     
     def _get_return(self):
-        reward = np.array([-1.0, -1.0,-1.0, -1.0,])#np.array([0.0, 0.0, 0.0, 0.0])
+        reward = np.array([0.0, 0.0, 0.0, 0.0])
         if not self.bidding_done:
             return reward
+        elif self.current_bid is None and len(self.bids) >= 4:
+            return np.array([-1000.0, -1000.0, -1000.0, -1000.0])
         elif len(self.played_tricks) < 8:
             return reward
         else:
-            if not self.played_tricks:
-                return reward#np.array([-1.0, -1.0,-1.0, -1.0,])
             
             #attacking = 0 if index even and 1 if odd
 
@@ -569,10 +570,10 @@ class GymCoinche(Env):
 
             
             #made 0 sum to give more informative reward about opponents.
-            if defender_points == 0:
-                defender_points = -1*attacker_points
-            if attacker_points == 0:
-                attacker_points = -1*defender_points
+            #if defender_points == 0:
+            #    defender_points = -1*attacker_points
+            #if attacker_points == 0:
+            #    attacker_points = -1*defender_points
 
             
             belote_bonus = 20 if any(p.has_belote for p in self.players if p.attacker) else 0
@@ -583,9 +584,12 @@ class GymCoinche(Env):
             ], dtype=np.float32)
             return reward
     
-    def clone(self):
+    def clone(self, players = None):
         new_env = GymCoinche()
-        new_env.players = [p.clone() for p in self.players]
+        if players is not None:
+            new_env.players = [p.clone() for p in players]
+        else:
+            new_env.players = [p.clone() for p in self.players]
         new_env.deck = self.deck.clone()
         new_env.round_number = self.round_number
         new_env.reshuffle_deck_each_round = self.reshuffle_deck_each_round
@@ -600,7 +604,7 @@ class GymCoinche(Env):
         new_env.coinche_surcoinche = copy.deepcopy(self.coinche_surcoinche)
         new_env.bidding_done = copy.deepcopy(self.bidding_done)
         new_env.attacker_team = copy.deepcopy(self.attacker_team)
-        new_env.current_trick_rotation = self.current_trick_rotation
+        new_env.current_trick_rotation = [p.clone() for p in self.current_trick_rotation]
         new_env.played_tricks = [trick.clone() for trick in self.played_tricks]
         new_env.trick = self.trick.clone() if self.trick else None
         new_env.suits_order = copy.deepcopy(self.suits_order)

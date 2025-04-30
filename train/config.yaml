@@ -6,7 +6,7 @@ policy: MlpPolicy
 env_id: coinche-v4
 total_timesteps: 10000 #1_000_000
 
-log_every: 10                 # Log every episode
+log_every: 1                 # Log every episode
 checkpoint_every: 1000 #10_000       # Save model every N steps
 eval_every: 1000 #10_000             # (Optional) evaluate agent every N steps
 
