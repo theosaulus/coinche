@@ -58,7 +58,7 @@ class GymCoinche(Env):
         self.round_number = 0
         self.reshuffle_deck_each_round = True
 
-        self.dealer_index = 0
+        self.dealer_index = np.random.randint(0, 3)
         self.current_bidding_player_index = (self.dealer_index + 1) % 4
         self.bids = []
         self.current_bid = None # tuple: (bid_value, atout_suit)
@@ -91,6 +91,7 @@ class GymCoinche(Env):
             p.attacker = None
             p.self_current_score = 0
             p.opponent_current_score = 0
+        self.dealer_index = np.random.randint(0, 3)
         self._deal_cards()
         self._init_bidding_phase()
         self.played_tricks = []
@@ -454,7 +455,10 @@ class GymCoinche(Env):
     
     def _get_valid_bid_actions(self, current_bid):
         if current_bid is None:
-            return list(range(1, 41)) + [0] # all bids except coinche/surcoinche + pass
+            if self.passes_in_row < 3:
+                return list(range(1, 41)) + [0] # all bids except coinche/surcoinche + pass
+            else: 
+                return list(range(1, 41))
         is_partner = self.bid_winning_player.index % 2 == self.current_bidding_player_index % 2
         if self.coinche_surcoinche == 1:
             # already coinched: only the bidder's team can surcoinche
@@ -570,10 +574,10 @@ class GymCoinche(Env):
 
             
             #made 0 sum to give more informative reward about opponents.
-            #if defender_points == 0:
-            #    defender_points = -1*attacker_points
-            #if attacker_points == 0:
-            #    attacker_points = -1*defender_points
+            if defender_points == 0:
+                defender_points = -1*attacker_points
+            if attacker_points == 0:
+                attacker_points = -1*defender_points
 
             
             belote_bonus = 20 if any(p.has_belote for p in self.players if p.attacker) else 0

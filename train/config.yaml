@@ -2,12 +2,12 @@ project_name: coincheadversarial
 
 wandb: True
 algorithm: DCFR #PPO, DCFR, 
-dcfr_algo: Full #Full, Sample, Single, Online
+dcfr_algo: Sample #Full, Sample, Single, Online
 policy: MlpPolicy
 env_id: coinche-v4
-total_timesteps: 50 #1_000_000
+total_timesteps: 5000 #1_000_000
 
-log_every: 1                 # Log every episode
+log_every: 10                 # Log every episode
 checkpoint_every: 1000 #10_000       # Save model every N steps
 eval_every: 1000 #10_000             # (Optional) evaluate agent every N steps
 
@@ -22,10 +22,12 @@ n_steps: 512
 batch_size: 256
 n_epochs: 10
 
-'cfr_players': "self_play" #'adv_opponent' # #"det_opponent" #"self_play" 
+'cfr_players': 'self_play' #'nash_test_det' #'self_play'
+#"random_opponents" #"det_opponents" #"det2_opponents" #"adv_opponents" #'adv_opponents' # #"det_opponents" #"self_play" 
 
 # "self_play" = [GymPlayer, GymPlayer, GymPlayer, GymPlayer]
 # "det_opponent" = [GymPlayer, DeterministicPlayer, GymPlayer, DeterministicPlayer]
 # "random_opponent" = [GymPlayer, RandomPlayer, GymPlayer, RandomPlayer]
 # 'det2_opponent' =  [GymPlayer, DeterministicPlayer_v2, DeterministicPlayer_v2, DeterministicPlayer_v2]
-# 'adv_opponent' = [GymPlayer, DeterministicPlayer, GymPlayer, DeterministicPlayer]
+# 'adv_opponent' = [GymPlayer, GymPlayer, DeterministicPlayer,  DeterministicPlayer]
+# 'adv_opponent2' = [GymPlayer, GymPlayer, DeterministicPlayer_v2,  DeterministicPlayer_v2]

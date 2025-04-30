@@ -69,26 +69,46 @@ class DeepCFR:
             self.players = [GymPlayer(i, name) for i, name in enumerate(["N", "E", "S", "W"])]
             self.learning_players = 4
             self.learning_players_idx = [0, 1, 2, 3]
-        elif cfr_players == 'random_opponent':
+        elif cfr_players == 'random_opponents':
             self.players = [GymPlayer(0, "N"), RandomPlayer(1, "E"),
                             GymPlayer(2, "S"), RandomPlayer(3, "W")]
             self.learning_players = 2
             self.learning_players_idx = [0, 2,]
-        elif cfr_players == 'det_opponent':
+        elif cfr_players == 'det_opponents':
             self.players = [GymPlayer(0, "N"), DeterministicPlayer(1, "E"),
                             GymPlayer(2, "S"), DeterministicPlayer(3, "W")]
             self.learning_players = 2
             self.learning_players_idx = [0, 2, ]
-        elif cfr_players == 'adv_opponent':
+        elif cfr_players == 'adv_opponents':
             self.players = [GymPlayer(0, "N"), GymPlayer(1, "E") ,
                            DeterministicPlayer(2, "S"), DeterministicPlayer(3, "W")]
             self.learning_players = 2
             self.learning_players_idx = [0, 1, ]
+        elif cfr_players == 'det2_opponents':
+            self.players = [GymPlayer(0, "N"), DeterministicPlayer_v2(1, "E"),
+                            GymPlayer(2, "S"), DeterministicPlayer_v2(3, "W")]
+            self.learning_players = 2
+            self.learning_players_idx = [0, 2]
         elif cfr_players == 'det2_opponent':
             self.players = [GymPlayer(0, "N"), DeterministicPlayer_v2(1, "E"),
                             DeterministicPlayer_v2(2, "S"), DeterministicPlayer_v2(3, "W")]
             self.learning_players = 1
             self.learning_players_idx = [0,]
+        elif cfr_players == 'adv2_opponents':
+            self.players = [GymPlayer(0, "N"), GymPlayer(1, "E") ,
+                           DeterministicPlayer_v2(2, "S"), DeterministicPlayer_v2(3, "W")]
+            self.learning_players = 2
+            self.learning_players_idx = [0, 1, ]
+        elif cfr_players == 'nash_test_random':
+            self.players = [GymPlayer(0, "N"), RandomPlayer(1, "E"),
+                            GymPlayer(2, "S"), GymPlayer(3, "W")]
+            self.learning_players = 3
+            self.learning_players_idx = [0, 2, 3]
+        elif cfr_players == 'nash_test_det':
+            self.players = [GymPlayer(1, "E"), DeterministicPlayer(0, "N"),
+                            GymPlayer(2, "S"), GymPlayer(3, "W")]
+            self.learning_players = 3
+            self.learning_players_idx = [0, 2, 3]
         else:
             raise ValueError("Invalid player configuration.")
 
@@ -101,12 +121,14 @@ class DeepCFR:
 
         # Hyperparameters and defaults
         defaults = {
-            'adv_hidden': [64, 64], 'adv_lr': 1e-4, 'adv_mem_size': 100_000,
-            'pol_hidden': [64, 64], 'pol_lr': 1e-4, 'pol_mem_size': 100_000,
-            'batch_size': 256, 'num_iterations': 10, 'log_interval': 1,
-            'num_traversals': 1, 'num_samples': 2, 
-            'adv_epochs': 1, 'pol_epochs': 1, 
+            'adv_hidden': [64, 64], 'adv_lr': 3e-4, 'adv_mem_size': 100_000,
+            'pol_hidden': [64, 64], 'pol_lr': 3e-4, 'pol_mem_size': 500_000,
+            'batch_size': 256, 'num_iterations': 10, 'log_interval': 10,
+            'num_traversals': 256, 'num_samples': 4, 
+            'adv_epochs': 4, 'pol_epochs': 4, 
         }
+
+        
         
         self.num_iterations = config.get('total_timesteps', defaults['num_iterations'])
         self.log_interval = config.get('log_every', defaults['log_interval'])
@@ -444,7 +466,7 @@ class DeepCFRWrapper(DeepCFR):
 
         for it in range(self.num_iterations):
             # Reset advantage memory
-            #self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
+            self.adv_memory = [ReplayBuffer(self.adv_mem_size) for _ in range(self.num_players)]
             # Collect advantage samples
             cur_adv_loss = np.zeros(self.num_players)
             for p in range(self.num_players):
@@ -551,7 +573,7 @@ class SingleDeepCFRWrapper(DeepCFR):
         self.adv_memory = [ReplayBufferSingle(self.adv_mem_size) for _ in range(self.num_players)]
         self.pol_memory = ReplayBufferSingle(self.pol_mem_size)
         for it in range(self.num_iterations):
-            #self.adv_memory = [ReplayBufferSingle(self.adv_mem_size) for _ in range(self.num_players)]
+            self.adv_memory = [ReplayBufferSingle(self.adv_mem_size) for _ in range(self.num_players)]
             cur_adv_loss = np.zeros(self.num_players)
             for p in range(self.num_players):
                 for _ in range(self.num_traversals):
@@ -615,6 +637,40 @@ class SampleDeepCFRWrapper(DeepCFR):
 
     def optimize_policy(self):
         if len(self.pol_memory) < self.batch_size:
+            return 0
+
+        per = self.batch_size // self.learning_players
+        batch = []
+
+        for p in self.learning_players_idx: #range(self.num_players):
+            p_items = [t for t in self.pol_memory.buffer if t.player == p]
+            if len(p_items) >= per:
+                batch += random.sample(p_items, per)
+            else:
+                batch += random.choices(p_items, k=per)
+
+        rem = self.batch_size - len(batch)
+        if rem:
+            batch += random.sample(self.pol_memory.buffer, rem)
+
+        obs_batch = torch.tensor(
+            np.array([np.insert(t.obs, 0, t.player) for t in batch], dtype=np.float32),
+            dtype=torch.float32
+        )
+        pi_targets = torch.tensor([t.action for t in batch], dtype=torch.float32)
+
+        logits  = self.policy_net(obs_batch)
+        pred_pi = torch.softmax(logits, dim=1)
+        loss    = nn.MSELoss()(pred_pi, pi_targets)
+
+        #print("Policy loss", loss.item())
+        self.policy_opt.zero_grad()
+        loss.backward()
+        self.policy_opt.step()
+        return loss.item()
+
+    def uneven_optimize_policy(self):
+        if len(self.pol_memory) < self.batch_size:
             return
         batch = self.pol_memory.sample(self.batch_size)
         #obs_batch = torch.tensor([np.insert(b.obs, 0, b.player) for b in batch], dtype=torch.float32)
@@ -643,7 +699,7 @@ class SampleDeepCFRWrapper(DeepCFR):
             torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
         ).squeeze(0)
         
-        
+        #ADD POLICY PARAMETERS  -> not just one value but array over actions
         mask = torch.zeros(self.num_actions)
         mask[legal]=1
         exp_l = torch.exp(logits)*mask
@@ -665,10 +721,10 @@ class SampleDeepCFRWrapper(DeepCFR):
                 advantage = (utilities[a] - v_all[a].item()) / pi_op
                 self.adv_memory[current].push(obs, a, advantage, current)
                 seen[a] = 1
-        
-            #v_np = self.adv_nets[current](torch.tensor(obs,dtype=torch.float32).unsqueeze(0)).squeeze(0).cpu().numpy()
-
+            
             # policy target
+            #v_np = self.adv_nets[current](torch.tensor(obs,dtype=torch.float32).unsqueeze(0)).squeeze(0).detach().numpy()
+
             v_np = v_all.cpu().numpy()
             mask_arr = np.zeros(self.num_actions); mask_arr[legal]=1
             adv_pos = np.clip(v_np,0,None)*mask_arr
@@ -751,6 +807,7 @@ class SampleDeepCFRWrapper(DeepCFR):
         self.pol_memory = ReplayBufferSample(self.pol_mem_size)
         for it in range(total_timesteps):
             #print("Iteration: ", it)
+            self.adv_memory = [ReplayBufferSample(self.adv_mem_size) for _ in range(self.num_players)]
             cur_adv_loss = np.zeros(self.num_players)
             for player in self.learning_players_idx:#range(self.num_players):
                 for _ in range(self.num_traversals):
