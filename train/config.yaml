@@ -4,7 +4,7 @@ wandb: True
 algorithm: DCFR #PPO
 policy: MlpPolicy
 env_id: coinche-v4
-total_timesteps: 10 #1_000_000
+total_timesteps: 1_000_000
 
 log_every: 1                 # Log every episode
 checkpoint_every: 1000 #10_000       # Save model every N steps

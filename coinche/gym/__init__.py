@@ -2,6 +2,9 @@ from gymnasium.envs.registration import register
 from coinche.player import RandomPlayer, AIPlayer, DeterministicPlayer
 from coinche.gym.gymplayer import GymPlayer
 import os
+import warnings
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="gymnasium.envs.registration")
 
 register(
     id='coinche-v3',

@@ -1,6 +1,6 @@
 import numpy as np
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
+# import tensorflow.compat.v1 as tf
+# tf.disable_v2_behavior()
 from coinche.gym.env import GymCoinche
 from coinche.player import RandomPlayer, AIPlayer, DeterministicPlayer, DeterministicPlayer_v2
 from coinche.gym.gymplayer import GymPlayer
@@ -325,7 +325,7 @@ class DeepCFRWrapper:
         results = {
             'avg_eps': np.mean(eps_len),
             'avg_reward': total / num_episodes}
-        return total / num_episodes, 
+        return results, 
 
 
 

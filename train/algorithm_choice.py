@@ -1,6 +1,6 @@
 import numpy as np
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
+# import tensorflow.compat.v1 as tf
+# tf.disable_v2_behavior()
 
 from sb3_contrib.ppo_mask import MaskablePPO
 import torch
