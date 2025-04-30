@@ -248,10 +248,10 @@ class GymCoinche(Env):
 
             # give symmetric rewards to give signal
             if defender_points == 0:
-                reward_defender_points = - 160.0
+                reward_defender_points = - attacker_points
                 reward_attacker_points = attacker_points
             else:
-                reward_defender_points = defender_points
+                reward_defender_points = 0.0
                 reward_attacker_points = - contract * multiplier # give a sense to bid lower
 
             belote_bonus = 20 if any(p.has_belote for p in self.players if p.attacker) else 0
