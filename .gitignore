@@ -875,3 +875,4 @@ wandb/run-20250430_061830-amgv3508/files/requirements.txt
 wandb/run-20250430_061830-amgv3508/files/wandb-metadata.json
 wandb/run-20250430_061830-amgv3508/files/wandb-summary.json
 wandb/run-20250430_061830-amgv3508/run-amgv3508.wandb
+*.pt

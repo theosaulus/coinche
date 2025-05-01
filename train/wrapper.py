@@ -150,7 +150,7 @@ class DeepCFR:
                          for _ in range(self.num_players)]
         self.adv_opts = [optim.Adam(net.parameters(), lr=self.adv_lr)
                          for net in self.adv_nets]
-        self.policy_net = make_mlp(self.obs_dim + 1, self.num_actions, self.pol_hidden)
+        self.policy_net = make_mlp(self.obs_dim, self.num_actions, self.pol_hidden)
         self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=self.pol_lr)
 
         # Memories
@@ -208,7 +208,8 @@ class DeepCFR:
                 current = state.current_player()
                 obs = state.information_state_tensor()
                 logits = policy(
-                    torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
+                    torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                    #torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
                 ).squeeze(0)
                 legal = state.legal_actions()
                 mask = torch.zeros(self.num_actions)
@@ -654,7 +655,8 @@ class SampleDeepCFRWrapper(DeepCFR):
             batch += random.sample(self.pol_memory.buffer, rem)
 
         obs_batch = torch.tensor(
-            np.array([np.insert(t.obs, 0, t.player) for t in batch], dtype=np.float32),
+            np.array([t.obs for t in batch], dtype=np.float32),
+            #np.array([np.insert(t.obs, 0, t.player) for t in batch], dtype=np.float32),
             dtype=torch.float32
         )
         pi_targets = torch.tensor([t.action for t in batch], dtype=torch.float32)
@@ -696,7 +698,8 @@ class SampleDeepCFRWrapper(DeepCFR):
         legal = state.legal_actions()
         #print(legal)
         logits = self.policy_net(
-            torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
+            torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            #torch.tensor(np.insert(obs, 0, current), dtype=torch.float32).unsqueeze(0)
         ).squeeze(0)
         
         #ADD POLICY PARAMETERS  -> not just one value but array over actions
@@ -712,15 +715,18 @@ class SampleDeepCFRWrapper(DeepCFR):
 
             utilities = {}
             seen = torch.zeros(self.num_actions, dtype=torch.float32)
+            seen_a = []
             if seen.sum() < len(legal) and seen.sum() < self.num_samples:
                 #a = pol.multinomial(num_samples=1).item()
                 a = torch.multinomial(pol*(1-seen), num_samples=1).item()
                 next_state = state.clone()
                 next_state.apply_action(a)
                 utilities[a] = self.traverse(next_state, target_player, pi*pol[a].item(), pi_op)
+                seen_a.append(a)
+                seen[a] = 1
+            for i, a in enumerate(seen_a):
                 advantage = (utilities[a] - v_all[a].item()) / pi_op
                 self.adv_memory[current].push(obs, a, advantage, current)
-                seen[a] = 1
             
             # policy target
             #v_np = self.adv_nets[current](torch.tensor(obs,dtype=torch.float32).unsqueeze(0)).squeeze(0).detach().numpy()
@@ -732,13 +738,13 @@ class SampleDeepCFRWrapper(DeepCFR):
             #with self.lock:
             #if current != 1 or random.random() < 0.002:
             self.pol_memory.push(obs, pi_target, None, current)
-
+            v_policy = np.dot(pi_target, v_np)
             # sample action to continue
             #pol_seen = torch.zeros(self.num_actions)
             #pol_seen[seen] = pol[seen]
-            a_sample = torch.multinomial(pol*(seen),1).item()
-            next_state = state.clone(); next_state.apply_action(a_sample)
-            return utilities[a_sample]
+            #a_sample = torch.multinomial(pol*(seen),1).item()
+            #next_state = state.clone(); next_state.apply_action(a_sample)
+            return v_policy
         else:
 
             a_sample = torch.multinomial(pol,1).item()
